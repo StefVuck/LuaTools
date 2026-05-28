@@ -2,7 +2,7 @@
 -- Bootstrap installer for CC Train Map.
 --
 -- First time on any CC computer:
---   wget https://raw.githubusercontent.com/StefVuck/test/main/install.lua install.lua
+--   wget https://raw.githubusercontent.com/StefVuck/LuaTools/main/install.lua install.lua
 --
 -- Then run for your computer's role:
 --   install display    -- main map display (5x5 monitor)
@@ -10,7 +10,7 @@
 --   install static     -- train schematic display (2-wide monitor)
 --   install update     -- re-download every file already on this computer
 
-local BASE = "https://raw.githubusercontent.com/StefVuck/test/main/cc"
+local BASE = "https://raw.githubusercontent.com/StefVuck/LuaTools/main/cc"
 
 -- Files for each role.
 -- optional = true  -> silently skip on 404 (e.g. nether maps not yet generated)
