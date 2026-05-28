@@ -91,7 +91,7 @@ def main():
     p.add_argument("--bbox", type=int, nargs=4, required=True,
                    metavar=("MINX", "MINZ", "MAXX", "MAXZ"))
     p.add_argument("--dimension", choices=["overworld", "nether"], required=True)
-    p.add_argument("--colours", type=int, default=16)
+    p.add_argument("--colours", type=int, default=13)
     args = p.parse_args()
 
     img = Image.open(args.input).convert("RGB")

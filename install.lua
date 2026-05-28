@@ -2,15 +2,16 @@
 -- Bootstrap installer for CC Train Map.
 --
 -- First time on any CC computer:
---   wget https://raw.githubusercontent.com/StefVuck/test/main/install.lua install.lua
+--   wget https://raw.githubusercontent.com/StefVuck/LuaTools/main/install.lua install.lua
 --
 -- Then run for your computer's role:
 --   install display    -- main map display (5x5 monitor)
 --   install station    -- per-station computer
 --   install static     -- train schematic display (2-wide monitor)
+--   install airship    -- airship GPS broadcaster
 --   install update     -- re-download every file already on this computer
 
-local BASE = "https://raw.githubusercontent.com/StefVuck/test/main/cc"
+local BASE = "https://raw.githubusercontent.com/StefVuck/LuaTools/main/cc"
 
 -- Files for each role.
 -- optional = true  -> silently skip on 404 (e.g. nether maps not yet generated)
@@ -32,6 +33,9 @@ local ROLES = {
   },
   station = {
     { "station.lua" },
+  },
+  airship = {
+    { "airship.lua" },
   },
   static = {
     { "staticmap.lua" },
@@ -128,11 +132,13 @@ elseif ROLES[role] then
     print("Run:  display")
   elseif role == "station" then
     print("Edit station.lua config, then run:  station")
+  elseif role == "airship" then
+    print("Edit airship.lua (set NAME and DIMENSION), then run:  airship")
   elseif role == "static" then
     print("Run:  staticmap")
   end
 
 else
   print("Unknown role '" .. role .. "'")
-  print("Valid roles: display, station, static, update")
+  print("Valid roles: display, station, airship, static, update")
 end

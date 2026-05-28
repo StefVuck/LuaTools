@@ -17,10 +17,23 @@
 --   D key          - toggle dimension
 --
 -- Scale indicator: top-right corner shows "1:S" (blocks per pixel) after each render.
+--
+-- Marker colours: generate maps with --colours 13 so palette slots 13 and 14 stay free.
+--   colors.red   (slot 16) = train markers
+--   colors.green (slot 13) = airship markers  (painted to 0x00ffff cyan at runtime)
+--   colors.black (slot 14) = dark background for scale indicator and base icons
 
-local CHANNEL       = "train_map"
-local REDRAW_PERIOD = 0.25
-local TRAIN_TIMEOUT = 600
+local CHANNEL        = "train_map"
+local REDRAW_PERIOD  = 0.25
+local TRAIN_TIMEOUT  = 600
+local AIRSHIP_TIMEOUT = 300   -- seconds before an unseen airship is dropped
+
+-- ---------------------------------------------------------------------------
+-- Static base markers  (fill in your bases here)
+local BASES = {
+  -- { name = "Main Base",  dim = "overworld", x =  500, z = -300 },
+  -- { name = "Nether Hub", dim = "nether",    x =    0, z =    0 },
+}
 
 -- ---------------------------------------------------------------------------
 -- Peripherals
@@ -108,14 +121,17 @@ local PALETTE_SLOTS = {
 local HEX_TO_SLOT = {}
 for i, slot in ipairs(PALETTE_SLOTS) do HEX_TO_SLOT[i - 1] = slot end
 
-local TRAIN_COLOUR = colors.red
+local TRAIN_COLOUR   = colors.red
+local AIRSHIP_COLOUR = colors.green  -- slot 13; free when maps use --colours 13
 
 local function applyPalette(map)
   for idx = 0, #PALETTE_SLOTS - 1 do
     local hex = map.palette[idx]
     if hex then mon.setPaletteColour(HEX_TO_SLOT[idx], hex) end
   end
-  mon.setPaletteColour(TRAIN_COLOUR, 0xff0040)
+  mon.setPaletteColour(TRAIN_COLOUR,   0xff0040)
+  mon.setPaletteColour(AIRSHIP_COLOUR, 0x00ffff)
+  mon.setPaletteColour(colors.black,   0x111111)
 end
 
 -- ---------------------------------------------------------------------------
@@ -130,11 +146,24 @@ local function pixelAt(map, x, y)
   return hexVal[map.pixels:sub(idx, idx)] or 0
 end
 
-local trainPixels = {}
+local function worldToPixel(map, wx, wz)
+  local fx = (wx - map.bbox.minX) / (map.bbox.maxX - map.bbox.minX)
+  local fy = (wz - map.bbox.minZ) / (map.bbox.maxZ - map.bbox.minZ)
+  return math.floor(fx * map.width + 0.5), math.floor(fy * map.height + 0.5)
+end
+
+local trainPixels   = {}
+local airshipPixels = {}
 
 local function isTrainAt(px, py)
   for _, t in ipairs(trainPixels) do
     if t.dim == currentDim and t.px == px and t.py == py then return t end
+  end
+end
+
+local function isAirshipAt(px, py)
+  for _, a in ipairs(airshipPixels) do
+    if a.dim == currentDim and a.px == px and a.py == py then return a end
   end
 end
 
@@ -153,11 +182,15 @@ local function render()
       local px   = cx - 1
       local tIdx = pixelAt(map, px, pyTop)
       local bIdx = pixelAt(map, px, pyBot)
-      local topTr = isTrainAt(px, pyTop) ~= nil
-      local botTr = isTrainAt(px, pyBot) ~= nil
+      local topTr  = isTrainAt(px, pyTop)
+      local botTr  = isTrainAt(px, pyBot)
+      local topAir = not topTr and isAirshipAt(px, pyTop)
+      local botAir = not botTr and isAirshipAt(px, pyBot)
       chars[cx] = HALF
-      fgs[cx]   = colors.toBlit(topTr and TRAIN_COLOUR or HEX_TO_SLOT[tIdx])
-      bgs[cx]   = colors.toBlit(botTr and TRAIN_COLOUR or HEX_TO_SLOT[bIdx])
+      fgs[cx] = colors.toBlit(
+        topTr and TRAIN_COLOUR or topAir and AIRSHIP_COLOUR or HEX_TO_SLOT[tIdx])
+      bgs[cx] = colors.toBlit(
+        botTr and TRAIN_COLOUR or botAir and AIRSHIP_COLOUR or HEX_TO_SLOT[bIdx])
     end
     mon.setCursorPos(1, cy)
     mon.blit(table.concat(chars), table.concat(fgs), table.concat(bgs))
@@ -177,12 +210,27 @@ local function renderScaleIndicator()
   local s = math.floor((map.bbox.maxX - map.bbox.minX) / map.width + 0.5)
   local label = "1:" .. tostring(s)
   local len   = #label
-  -- Dark background: set colors.black to near-black (never touched by applyPalette)
-  mon.setPaletteColour(colors.black, 0x111111)
-  local fg = colors.toBlit(TRAIN_COLOUR)   -- bright red/pink  (already 0xff0040)
-  local bg = colors.toBlit(colors.black)   -- dark
+  local fg = colors.toBlit(TRAIN_COLOUR)
+  local bg = colors.toBlit(colors.black)
   mon.setCursorPos(CW - len + 1, 1)
   mon.blit(label, fg:rep(len), bg:rep(len))
+end
+
+-- Render static base markers as house icons on top of the half-block map.
+local function renderBases()
+  local map = currentMap()
+  if not map or #BASES == 0 then return end
+  local fg = colors.toBlit(TRAIN_COLOUR)
+  local bg = colors.toBlit(colors.black)
+  for _, base in ipairs(BASES) do
+    if base.dim == currentDim then
+      local px, py = worldToPixel(map, base.x, base.z)
+      if px >= 0 and px < CW and py >= 0 and py < PH then
+        mon.setCursorPos(px + 1, math.floor(py / 2) + 1)
+        mon.blit("\127", fg, bg)
+      end
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -190,13 +238,8 @@ end
 
 local stations = {}
 local trains   = {}
+local airships = {}
 local edges    = {}
-
-local function worldToPixel(map, wx, wz)
-  local fx = (wx - map.bbox.minX) / (map.bbox.maxX - map.bbox.minX)
-  local fy = (wz - map.bbox.minZ) / (map.bbox.maxZ - map.bbox.minZ)
-  return math.floor(fx * map.width + 0.5), math.floor(fy * map.height + 0.5)
-end
 
 local function lerp(a, b, t) return a + (b - a) * t end
 
@@ -231,8 +274,37 @@ local function recomputeTrainPositions()
   end
 end
 
+local function recomputeAirshipPositions()
+  airshipPixels = {}
+  local now = os.epoch("utc") / 1000
+  local map = currentMap()
+  if not map then return end
+  for name, a in pairs(airships) do
+    if (now - a.lastSeen) > AIRSHIP_TIMEOUT then
+      airships[name] = nil
+    elseif a.dim == currentDim then
+      local px, py = worldToPixel(map, a.x, a.z)
+      airshipPixels[#airshipPixels + 1] = { dim = a.dim, px = px, py = py, name = name }
+    end
+  end
+end
+
 local function handleEvent(msg)
-  if not msg or not msg.stationId then return end
+  if not msg then return end
+
+  if msg.type == "airship" then
+    if msg.name and msg.coords then
+      airships[msg.name] = {
+        dim      = msg.dimension or "overworld",
+        x        = msg.coords.x,
+        z        = msg.coords.z,
+        lastSeen = os.epoch("utc") / 1000,
+      }
+    end
+    return
+  end
+
+  if not msg.stationId then return end
   local sid = msg.stationId
   stations[sid] = stations[sid] or {}
   stations[sid].dimension = msg.dimension
@@ -310,8 +382,10 @@ end
 local function renderLoop()
   while true do
     recomputeTrainPositions()
+    recomputeAirshipPositions()
     render()
     renderScaleIndicator()
+    renderBases()
     sleep(REDRAW_PERIOD)
   end
 end
