@@ -299,7 +299,11 @@ local function recomputeAirshipPositions()
     if (now - a.lastSeen) > AIRSHIP_TIMEOUT then
       airships[name] = nil
     elseif a.dim == currentDim then
-      local px, py = worldToPixel(map, a.x, a.z)
+      -- Dead-reckon position using last known velocity
+      local dt = now - a.lastSeen
+      local ex = a.x + (a.vx or 0) * dt
+      local ez = a.z + (a.vz or 0) * dt
+      local px, py = worldToPixel(map, ex, ez)
       airshipPixels[#airshipPixels + 1] = { dim = a.dim, px = px, py = py, name = name }
     end
   end
@@ -314,6 +318,8 @@ local function handleEvent(msg)
         dim      = msg.dimension or "overworld",
         x        = msg.coords.x,
         z        = msg.coords.z,
+        vx       = msg.velocity and msg.velocity.x or 0,
+        vz       = msg.velocity and msg.velocity.z or 0,
         lastSeen = os.epoch("utc") / 1000,
       }
     end

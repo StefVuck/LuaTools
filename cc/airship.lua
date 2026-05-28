@@ -1,52 +1,48 @@
 -- airship.lua
--- Broadcasts this airship's GPS position to the map display.
--- Run this on a CC computer with a wireless modem and GPS access.
+-- Broadcasts this airship's position to the map display using CC:Sable.
+-- Requires CC:Sable (Create: Simulated addon) and a wireless modem.
+-- The computer must be placed on the airship (a physics Sub-Level).
 --
 -- Setup:
---   1. Set NAME to a unique name for this airship.
+--   1. Place this computer on the airship Sub-Level.
 --   2. Set DIMENSION to "overworld" or "nether".
 --   3. Attach a wireless modem.
---   4. Ensure the server has a GPS constellation set up.
+--   4. Run this script (or add to startup).
 
-local NAME      = "My Airship"   -- change this per airship
-local DIMENSION = "overworld"    -- "overworld" or "nether"
+local DIMENSION = "overworld"   -- "overworld" or "nether"
 local CHANNEL   = "train_map"
-local INTERVAL  = 5              -- seconds between position broadcasts
+local INTERVAL  = 2             -- seconds between position broadcasts
 
 local modem = peripheral.find("modem") or error("no modem found")
 rednet.open(peripheral.getName(modem))
-print(("Airship tracker started: %s"):format(NAME))
 
-local lastX, lastZ = nil, nil
-local gpsWarned = false
+-- Wait until the computer is actually on a Sub-Level
+while not sublevel.isInPlotGrid() do
+  print("Waiting for Sub-Level... (is this computer on an airship?)")
+  sleep(2)
+end
+
+local name = sublevel.getName()
+print(("Airship tracker started: %s"):format(name))
 
 while true do
-  local x, y, z = gps.locate(5)
-  if x then
-    lastX, lastZ = math.floor(x), math.floor(z)
-    gpsWarned = false
-    rednet.broadcast({
-      type      = "airship",
-      name      = NAME,
-      dimension = DIMENSION,
-      coords    = { x = lastX, z = lastZ },
-    }, CHANNEL)
-    print(("Broadcast: %s @ %d, %d"):format(NAME, lastX, lastZ))
-  elseif lastX then
-    -- GPS lost but we have a last-known position; keep broadcasting it
-    rednet.broadcast({
-      type      = "airship",
-      name      = NAME,
-      dimension = DIMENSION,
-      coords    = { x = lastX, z = lastZ },
-    }, CHANNEL)
-    print("GPS lost - broadcasting last known position")
+  if not sublevel.isInPlotGrid() then
+    print("Warning: Sub-Level lost (airship deconstructed?)")
+    sleep(INTERVAL)
   else
-    if not gpsWarned then
-      print("GPS fix failed. Ensure a GPS constellation (4 CC computers with")
-      print("  wireless modems running 'gps host X Y Z') is set up on the server.")
-      gpsWarned = true
-    end
+    local pose = sublevel.getLogicalPose()
+    local vel  = sublevel.getLinearVelocity()
+    local pos  = pose.position
+
+    rednet.broadcast({
+      type      = "airship",
+      name      = name,
+      dimension = DIMENSION,
+      coords    = { x = pos.x, z = pos.z },
+      velocity  = { x = vel.x, z = vel.z },
+    }, CHANNEL)
+    print(("  %s @ %.1f, %.1f  vel: %.2f, %.2f"):format(
+      name, pos.x, pos.z, vel.x, vel.z))
+    sleep(INTERVAL)
   end
-  sleep(INTERVAL)
 end
