@@ -18,10 +18,9 @@
 --
 -- Scale indicator: top-right corner shows "1:S" (blocks per pixel) after each render.
 --
--- Marker colours: generate maps with --colours 13 so palette slots 13 and 14 stay free.
---   colors.red   (slot 16) = train markers
---   colors.green (slot 13) = airship markers  (painted to 0x00ffff cyan at runtime)
---   colors.black (slot 14) = dark background for scale indicator and base icons
+-- Marker colours: generate maps with --colours 14 so palette slots 14 and 16 stay free.
+--   colors.red   (slot 16) = train pixel dots and all marker text
+--   colors.black (slot 14) = dark background for rings, labels, and scale indicator
 
 local CHANNEL        = "train_map"
 local REDRAW_PERIOD  = 0.25
@@ -121,17 +120,15 @@ local PALETTE_SLOTS = {
 local HEX_TO_SLOT = {}
 for i, slot in ipairs(PALETTE_SLOTS) do HEX_TO_SLOT[i - 1] = slot end
 
-local TRAIN_COLOUR   = colors.red
-local AIRSHIP_COLOUR = colors.green  -- slot 13; free when maps use --colours 13
+local TRAIN_COLOUR = colors.red
 
 local function applyPalette(map)
   for idx = 0, #PALETTE_SLOTS - 1 do
     local hex = map.palette[idx]
     if hex then mon.setPaletteColour(HEX_TO_SLOT[idx], hex) end
   end
-  mon.setPaletteColour(TRAIN_COLOUR,   0xff0040)
-  mon.setPaletteColour(AIRSHIP_COLOUR, 0x00ffff)
-  mon.setPaletteColour(colors.black,   0x111111)
+  mon.setPaletteColour(TRAIN_COLOUR, 0xff0040)
+  mon.setPaletteColour(colors.black, 0x111111)
 end
 
 -- ---------------------------------------------------------------------------
@@ -161,10 +158,10 @@ local function isTrainAt(px, py)
   end
 end
 
-local function isAirshipAt(px, py)
-  for _, a in ipairs(airshipPixels) do
-    if a.dim == currentDim and a.px == px and a.py == py then return a end
-  end
+-- Returns true if any adjacent pixel (4-connected) contains a train marker.
+local function isAdjacentToTrain(px, py)
+  return isTrainAt(px-1, py) or isTrainAt(px+1, py) or
+         isTrainAt(px, py-1) or isTrainAt(px, py+1)
 end
 
 local HALF = "\143"
@@ -182,15 +179,15 @@ local function render()
       local px   = cx - 1
       local tIdx = pixelAt(map, px, pyTop)
       local bIdx = pixelAt(map, px, pyBot)
-      local topTr  = isTrainAt(px, pyTop)
-      local botTr  = isTrainAt(px, pyBot)
-      local topAir = not topTr and isAirshipAt(px, pyTop)
-      local botAir = not botTr and isAirshipAt(px, pyBot)
+      local topTr   = isTrainAt(px, pyTop)
+      local botTr   = isTrainAt(px, pyBot)
+      local topRing = not topTr and isAdjacentToTrain(px, pyTop)
+      local botRing = not botTr and isAdjacentToTrain(px, pyBot)
       chars[cx] = HALF
       fgs[cx] = colors.toBlit(
-        topTr and TRAIN_COLOUR or topAir and AIRSHIP_COLOUR or HEX_TO_SLOT[tIdx])
+        topTr and TRAIN_COLOUR or topRing and colors.black or HEX_TO_SLOT[tIdx])
       bgs[cx] = colors.toBlit(
-        botTr and TRAIN_COLOUR or botAir and AIRSHIP_COLOUR or HEX_TO_SLOT[bIdx])
+        botTr and TRAIN_COLOUR or botRing and colors.black or HEX_TO_SLOT[bIdx])
     end
     mon.setCursorPos(1, cy)
     mon.blit(table.concat(chars), table.concat(fgs), table.concat(bgs))
@@ -216,20 +213,39 @@ local function renderScaleIndicator()
   mon.blit(label, fg:rep(len), bg:rep(len))
 end
 
--- Render static base markers as house icons on top of the half-block map.
+local function blitLabel(cx, cy, icon, name)
+  local fg = colors.toBlit(TRAIN_COLOUR)
+  local bg = colors.toBlit(colors.black)
+  if cx < 1 or cx > CW or cy < 1 or cy > CH then return end
+  mon.setCursorPos(cx, cy)
+  mon.blit(icon, fg, bg)
+  if name and #name > 0 and cx + 1 <= CW then
+    local label = name:sub(1, CW - cx)
+    mon.setCursorPos(cx + 1, cy)
+    mon.blit(label, fg:rep(#label), bg:rep(#label))
+  end
+end
+
+-- Render static base markers as house icons with name labels.
 local function renderBases()
   local map = currentMap()
   if not map or #BASES == 0 then return end
-  local fg = colors.toBlit(TRAIN_COLOUR)
-  local bg = colors.toBlit(colors.black)
   for _, base in ipairs(BASES) do
     if base.dim == currentDim then
       local px, py = worldToPixel(map, base.x, base.z)
       if px >= 0 and px < CW and py >= 0 and py < PH then
-        mon.setCursorPos(px + 1, math.floor(py / 2) + 1)
-        mon.blit("\127", fg, bg)
+        blitLabel(px + 1, math.floor(py / 2) + 1, "\127", base.name)
       end
     end
+  end
+end
+
+-- Render airship markers as * icons with name labels.
+local function renderAirships()
+  for _, a in ipairs(airshipPixels) do
+    local cx = a.px + 1
+    local cy = math.floor(a.py / 2) + 1
+    blitLabel(cx, cy, "*", a.name)
   end
 end
 
@@ -385,6 +401,7 @@ local function renderLoop()
     recomputeAirshipPositions()
     render()
     renderScaleIndicator()
+    renderAirships()
     renderBases()
     sleep(REDRAW_PERIOD)
   end
