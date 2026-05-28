@@ -240,12 +240,30 @@ local function renderBases()
   end
 end
 
--- Render airship markers as * icons with name labels.
+-- Returns a heading character based on velocity direction.
+-- In Minecraft: +X = East, -Z = North, +Z = South, -X = West.
+local function headingChar(vx, vz)
+  local speed = math.sqrt(vx * vx + vz * vz)
+  if speed < 0.5 then return "*" end
+  -- atan2(-vz, vx): 0=East, 90=North, 180=West, 270=South (normalised 0-360)
+  local deg = math.deg(math.atan2(-vz, vx))
+  if deg < 0 then deg = deg + 360 end
+  if deg >= 45 and deg < 135 then return "^"   -- North
+  elseif deg >= 135 and deg < 225 then return "<" -- West
+  elseif deg >= 225 and deg < 315 then return "v" -- South
+  else return ">"                                  -- East
+  end
+end
+
+-- Render airship markers with heading arrow and speed label.
 local function renderAirships()
   for _, a in ipairs(airshipPixels) do
-    local cx = a.px + 1
-    local cy = math.floor(a.py / 2) + 1
-    blitLabel(cx, cy, "*", a.name)
+    local cx    = a.px + 1
+    local cy    = math.floor(a.py / 2) + 1
+    local speed = math.sqrt((a.vx) ^ 2 + (a.vz) ^ 2)
+    local icon  = headingChar(a.vx, a.vz)
+    local label = string.format("%s %.1f/s", a.name, speed)
+    blitLabel(cx, cy, icon, label)
   end
 end
 
@@ -304,7 +322,10 @@ local function recomputeAirshipPositions()
       local ex = a.x + (a.vx or 0) * dt
       local ez = a.z + (a.vz or 0) * dt
       local px, py = worldToPixel(map, ex, ez)
-      airshipPixels[#airshipPixels + 1] = { dim = a.dim, px = px, py = py, name = name }
+      airshipPixels[#airshipPixels + 1] = {
+        dim = a.dim, px = px, py = py, name = name,
+        vx = a.vx or 0, vz = a.vz or 0,
+      }
     end
   end
 end
