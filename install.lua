@@ -136,7 +136,7 @@ elseif ROLES[role] then
   elseif role == "autopilot" then
     print("Navigator:  attach Redstone Link Bridge, then run:")
     print("  autopilot/autopilot <x> <z>  OR  autopilot/autopilot <waypointName>")
-    print("HUD:        attach 1x3 horizontal monitor + modem, then run:")
+    print("HUD:        attach 5x3 horizontal monitor bank + modem, then run:")
     print("  autopilot/hud")
   elseif role == "static" then
     print("Run:  staticmap")

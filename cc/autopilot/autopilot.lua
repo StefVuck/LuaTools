@@ -12,7 +12,8 @@
 -- Setup:
 --   1. Place this computer on the airship Sub-Level.
 --   2. Attach a CC: Redstone Link Bridge peripheral.
---   3. Run:  autopilot/autopilot <x> <z>  OR  autopilot/autopilot <waypointName>
+--   3. Tune heading_offset in CFG (see comment there).
+--   4. Run:  autopilot/autopilot <x> <z>  OR  autopilot/autopilot <waypointName>
 
 -- ---------------------------------------------------------------------------
 -- Frequency pair config
@@ -70,6 +71,12 @@ local CFG = {
   -- Proportional gain for differential speed correction (0-1)
   -- 1.0 = at zone boundary the slow motor drops to zero
   turn_p = 0.9,
+
+  -- Heading offset: compensates for ships built facing a non-North direction.
+  -- If the ship was built facing West (270 deg), set heading_offset = 90 so
+  -- that moving West reads as 270 deg rather than 0.
+  -- Tune by facing North, noting the raw heading, then set offset = -(that value).
+  heading_offset = 90,
 
   -- Broadcast status on this rednet channel
   status_channel   = "autopilot",
@@ -193,11 +200,12 @@ local function headingError(vx, vz, dest_x, dest_z, pos_x, pos_z)
   local tdz = dest_z - pos_z
   local target_bearing = (math.deg(math.atan2(tdx, -tdz)) + 360) % 360
 
-  -- Current heading from velocity (degrees clockwise from North)
+  -- Current heading from velocity (degrees clockwise from North).
+  -- CFG.heading_offset corrects for ships built facing a non-North direction.
   local speed = math.sqrt(vx*vx + vz*vz)
   if speed < 0.5 then return 0 end  -- too slow to determine heading; hold course
 
-  local current_heading = (math.deg(math.atan2(vx, -vz)) + 360) % 360
+  local current_heading = (math.deg(math.atan2(vx, -vz)) + CFG.heading_offset + 360) % 360
   return signedAngleDiff(current_heading, target_bearing)
 end
 
