@@ -55,6 +55,7 @@ end
 
 local function put(x, y, text, fg, bg)
   if x < 1 or y < 1 or x > W or y > H then return end
+  text = tostring(text or "")
   mon.setCursorPos(x, y)
   mon.setTextColor(fg or C.value)
   mon.setBackgroundColor(bg or C.bg)
@@ -64,6 +65,7 @@ end
 
 -- Right-align text within a column of width `w` starting at `x`
 local function putr(x, y, w, text, fg, bg)
+  text = tostring(text or "")
   local pad = w - #text
   if pad > 0 then put(x, y, (" "):rep(pad) .. text, fg, bg)
   else            put(x, y, text:sub(-w),             fg, bg) end
@@ -208,7 +210,7 @@ end
 -- State (updated from rednet or sublevel)
 
 local data = {
-  name    = "—",
+  name    = "?",
   phase   = "waiting",
   pos     = { x = 0, z = 0 },
   dest    = { x = 0, z = 0 },
@@ -217,7 +219,7 @@ local data = {
   speed   = 0,
   bearing = 0,    -- degrees clockwise from North
   err_deg = 0,    -- signed heading error: +ve = turn right, -ve = turn left
-  zone    = "—",  -- fine / medium / coarse
+  zone    = "wait",  -- fine / medium / coarse / wait
   eta     = nil,
   updated = 0,
 }
@@ -284,7 +286,7 @@ local function fmtDist(d)
 end
 
 local function fmtETA(eta)
-  if not eta then return "—" end
+  if not eta then return "---" end
   if eta >= 3600 then return (">1h") end
   if eta >= 60   then return ("%dm%02ds"):format(math.floor(eta/60), eta%60) end
   return ("%ds"):format(eta)
@@ -348,8 +350,9 @@ local function redraw()
 
   local zoneCol = data.zone == "fine"   and C.good
                or data.zone == "medium" and C.warn
+               or data.zone == "wait"   and C.border
                or C.bad
-  row(2, 11, "Zone ", data.zone:upper(), zoneCol)
+  row(2, 11, "Zone ", (data.zone or "wait"):upper(), zoneCol)
 
   -- ── Panel 3: Compass rose + velocity readouts ────────────────────────────
   panelHeader(3, "COMPASS")
