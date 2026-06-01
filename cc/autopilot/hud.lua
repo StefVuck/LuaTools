@@ -31,8 +31,8 @@ local HEADING_OFFSET = 90   -- degrees; adjust until North reads ~0 when facing 
 -- Set to nil to disable.
 
 local HOME = {
-  x = 0,    -- <-- set your home X coordinate
-  z = 0,    -- <-- set your home Z coordinate
+  x = 990,
+  z = 113,
   label = "Home",
 }
 
@@ -502,12 +502,25 @@ local function netLoop()
   end
 end
 
+local dbg_tick = 0
 local function renderLoop()
   while true do
     local ok, err = pcall(updateFromSublevel)
     if not ok then
       print("[hud] sublevel error: " .. tostring(err))
     end
+
+    -- Print a diagnostic line to the terminal every 5 seconds
+    dbg_tick = dbg_tick + 1
+    if dbg_tick % math.ceil(5 / REDRAW_PERIOD) == 0 then
+      print(("[hud] sublevel=%s ok=%s name=%s pos=%.0f,%.0f spd=%.2f"):format(
+        tostring(sublevel ~= nil),
+        tostring(data.sublevel_ok),
+        tostring(data.name),
+        data.pos.x, data.pos.z,
+        data.speed))
+    end
+
     redraw()
     sleep(REDRAW_PERIOD)
   end
