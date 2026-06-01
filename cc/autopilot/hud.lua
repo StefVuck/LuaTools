@@ -96,6 +96,26 @@ local function row(panel, y, label, value, vcol)
 end
 
 -- ---------------------------------------------------------------------------
+-- State (updated from rednet or sublevel)
+
+local data = {
+  name    = "?",
+  phase   = "waiting",
+  pos     = { x = 0, z = 0 },
+  dest    = { x = 0, z = 0 },
+  dist    = 0,
+  vel     = { x = 0, z = 0 },
+  speed   = 0,
+  bearing = 0,    -- degrees clockwise from North
+  err_deg = 0,    -- signed heading error: +ve = turn right, -ve = turn left
+  zone    = "wait",  -- fine / medium / coarse / wait
+  eta     = nil,
+  updated = 0,
+}
+
+local MAX_SPEED = 10   -- reference for bar (matches autopilot CFG.max_speed)
+
+-- ---------------------------------------------------------------------------
 -- Compass rose
 --
 -- Drawn in panel 3.  Two overlaid indicators:
@@ -205,26 +225,6 @@ local function speedBar(panel, y, speed, maxspd)
     put(x0 + filled, y, ("-"):rep(avail - filled), C.border)
   end
 end
-
--- ---------------------------------------------------------------------------
--- State (updated from rednet or sublevel)
-
-local data = {
-  name    = "?",
-  phase   = "waiting",
-  pos     = { x = 0, z = 0 },
-  dest    = { x = 0, z = 0 },
-  dist    = 0,
-  vel     = { x = 0, z = 0 },
-  speed   = 0,
-  bearing = 0,    -- degrees clockwise from North
-  err_deg = 0,    -- signed heading error: +ve = turn right, -ve = turn left
-  zone    = "wait",  -- fine / medium / coarse / wait
-  eta     = nil,
-  updated = 0,
-}
-
-local MAX_SPEED = 10   -- reference for bar (matches autopilot CFG.max_speed)
 
 local function updateFromSublevel()
   if not sublevel or not sublevel.isInPlotGrid() then return end
