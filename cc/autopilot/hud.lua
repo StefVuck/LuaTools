@@ -26,6 +26,17 @@
 local HEADING_OFFSET = 90   -- degrees; adjust until North reads ~0 when facing North
 
 -- ---------------------------------------------------------------------------
+-- Home location
+-- Shown as a pink [H] marker on the compass rose and as "Dist Home" in panel 1.
+-- Set to nil to disable.
+
+local HOME = {
+  x = 0,    -- <-- set your home X coordinate
+  z = 0,    -- <-- set your home Z coordinate
+  label = "Home",
+}
+
+-- ---------------------------------------------------------------------------
 -- Peripherals
 
 local function findFirst(t)
@@ -56,6 +67,7 @@ local C = {
   bad    = colors.red,
   border = colors.gray,
   bg     = colors.black,
+  home   = colors.pink,
 }
 
 -- ---------------------------------------------------------------------------
@@ -81,6 +93,10 @@ local data = {
   zone         = "off",
   eta          = nil,
   ap_updated   = 0,      -- last time an autopilot packet was received
+
+  -- Home (derived from HOME config + live position)
+  home_bearing = 0,
+  home_dist    = 0,
 }
 
 local MAX_SPEED = 10   -- matches autopilot CFG.max_speed
@@ -198,61 +214,77 @@ local function drawCompass(panel, y0)
 
   local active_hdg = data.speed > 0.5 and data.heading or data.last_heading
   local hdg_oct    = active_hdg and degToOctant(active_hdg) or nil
-  local brg_oct = degToOctant(data.bearing)
+  local brg_oct    = degToOctant(data.bearing)
+  local home_oct   = HOME and degToOctant(data.home_bearing) or nil
 
-  -- Ring labels
+  -- Ring labels — priority: heading > bearing > home > dim
   for _, pt in ipairs(ROSE_POINTS) do
     local label, dc, dr, oct = pt[1], pt[2], pt[3], pt[4]
     local col
-    if hdg_oct and oct == hdg_oct and oct == brg_oct then
-      col = colors.orange
-    elseif hdg_oct and oct == hdg_oct then
+    if hdg_oct and oct == hdg_oct then
       col = colors.yellow
-    elseif oct == brg_oct then
+    elseif oct == brg_oct and data.ap_updated > 0 then
       col = colors.cyan
+    elseif home_oct and oct == home_oct then
+      col = C.home
     else
       col = C.border
     end
     put(x0 + dc, y0 + dr, label, col)
   end
 
-  -- Centre cell
+  -- Centre cell: heading arrow
   local cx = x0 + math.floor(ROSE_W / 2)
   local cy = y0 + math.floor(ROSE_H / 2)
   if hdg_oct then
     put(cx, cy, HDG_CHAR[hdg_oct], colors.yellow)
   else
-    put(cx, cy, "+",               C.border)
+    put(cx, cy, "+", C.border)
   end
 
-  -- Bearing ring tick (only if different octant from heading)
-  if not hdg_oct or brg_oct ~= hdg_oct then
+  -- Bearing ring tick (cyan, autopilot online only)
+  if data.ap_updated > 0 and (not hdg_oct or brg_oct ~= hdg_oct) then
     local bp = ROSE_POINTS[brg_oct + 1]
     if bp then
       put(x0 + bp[2], y0 + bp[3], BRG_CHAR[brg_oct], colors.cyan)
     end
   end
 
-  -- Readouts below rose
-  local dirs  = { "N","NE","E","SE","S","SW","W","NW" }
-  local rx    = p_off
-  local ry    = y0 + ROSE_H + 1
+  -- Home ring tick (pink H, only if home defined and different from heading)
+  if home_oct and (not hdg_oct or home_oct ~= hdg_oct) then
+    local hp = ROSE_POINTS[home_oct + 1]
+    if hp then
+      put(x0 + hp[2], y0 + hp[3], "H", C.home)
+    end
+  end
 
-  local active_hdg = data.speed > 0.5 and data.heading or data.last_heading
+  -- Readouts below rose
+  local dirs = { "N","NE","E","SE","S","SW","W","NW" }
+  local rx   = p_off
+  local ry   = y0 + ROSE_H + 1
+
   local hdg_str = active_hdg
     and ("%03d %s%s"):format(math.floor(active_hdg),
                              dirs[degToOctant(active_hdg) + 1],
                              data.speed < 0.5 and "*" or "")
     or  "--- --"
-  local brg_str = ("%03d %s"):format(math.floor(data.bearing),
-                                     dirs[brg_oct + 1])
 
-  put(rx, ry,     "HDG ", C.label)
-  put(rx + 4, ry, hdg_str,
+  put(rx,     ry,     "HDG ", C.label)
+  put(rx + 4, ry,     hdg_str,
       data.speed > 0.5 and colors.yellow or C.border)
 
-  put(rx, ry + 1,     "BRG ", C.label)
-  put(rx + 4, ry + 1, brg_str, colors.cyan)
+  if data.ap_updated > 0 then
+    local brg_str = ("%03d %s"):format(math.floor(data.bearing), dirs[brg_oct + 1])
+    put(rx,     ry + 1, "BRG ", C.label)
+    put(rx + 4, ry + 1, brg_str, colors.cyan)
+  end
+
+  if HOME then
+    local home_str = ("%03d %s"):format(math.floor(data.home_bearing),
+                                        dirs[(home_oct or 0) + 1])
+    put(rx,     ry + 2, "HOM ", C.label)
+    put(rx + 4, ry + 2, home_str, C.home)
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -279,6 +311,14 @@ local function recalcNav()
   data.bearing = (math.deg(math.atan2(dx, -dz)) + 360) % 360
   data.eta     = (data.speed > 0.5 and data.ap_updated > 0)
     and math.floor(data.dist / data.speed) or nil
+
+  -- Home
+  if HOME then
+    local hx = HOME.x - data.pos.x
+    local hz = HOME.z - data.pos.z
+    data.home_dist    = math.sqrt(hx*hx + hz*hz)
+    data.home_bearing = (math.deg(math.atan2(hx, -hz)) + 360) % 360
+  end
 end
 
 local function updateFromSublevel()
@@ -397,11 +437,14 @@ local function redraw()
   hline(1, 11)
   row(1, 12, "Heading  ", fmtHeading())
   row(1, 13, "Speed    ", ("%.1f m/s"):format(data.speed))
-  hline(1, 14)
+  if HOME then
+    row(1, 14, "Dist " .. HOME.label:sub(1,4), fmtDist(data.home_dist), C.home)
+  end
+  hline(1, 15)
 
   local aeCol = math.abs(data.err_deg) <= 10 and C.good
              or math.abs(data.err_deg) <= 45 and C.warn or C.bad
-  row(1, 15, "Hdg Err  ",
+  row(1, 16, "Hdg Err  ",
       ap and (data.err_deg >= 0 and "+" or "") .. ("%.1f deg"):format(data.err_deg) or "---",
       ap and aeCol or C.border)
 
@@ -409,7 +452,7 @@ local function redraw()
                or data.zone == "medium" and C.warn
                or data.zone == "off"    and C.border
                or C.bad
-  row(1, 16, "Steer    ", data.zone:upper(), zoneCol)
+  row(1, 17, "Steer    ", data.zone:upper(), zoneCol)
 
   hline(1, H - 1)
   local subAge = now - data.sub_updated
@@ -461,7 +504,10 @@ end
 
 local function renderLoop()
   while true do
-    pcall(updateFromSublevel)
+    local ok, err = pcall(updateFromSublevel)
+    if not ok then
+      print("[hud] sublevel error: " .. tostring(err))
+    end
     redraw()
     sleep(REDRAW_PERIOD)
   end
