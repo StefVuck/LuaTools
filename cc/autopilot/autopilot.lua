@@ -76,7 +76,7 @@ local CFG = {
   -- If the ship was built facing West (270 deg), set heading_offset = 90 so
   -- that moving West reads as 270 deg rather than 0.
   -- Tune by facing North, noting the raw heading, then set offset = -(that value).
-  heading_offset = 90,
+  heading_offset = 0,
 
   -- Broadcast status on this rednet channel
   status_channel   = "autopilot",

@@ -23,7 +23,7 @@
 -- e.g. if ship was built facing West (270 deg), set HEADING_OFFSET = 90
 --      so that the displayed heading is corrected back to world North = 0.
 
-local HEADING_OFFSET = 90   -- degrees; adjust until North reads ~0 when facing North
+local HEADING_OFFSET = 0   -- degrees; adjust until North reads ~0 when facing North
 
 -- ---------------------------------------------------------------------------
 -- Home location
