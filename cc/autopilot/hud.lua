@@ -73,11 +73,15 @@ local C = {
 -- ---------------------------------------------------------------------------
 -- State  (declared early so every function below can reference it)
 
+local HEADING_MIN_SPEED = 2.0   -- m/s; below this heading is considered unreliable
+local HEADING_SMOOTH    = 0.15  -- EMA factor; lower = smoother but slower to react
+
 local data = {
   -- Always live from sublevel
   name         = "?",
   pos          = { x = 0, z = 0 },
   vel          = { x = 0, z = 0 },
+  vel_smooth   = { x = 0, z = 0 },  -- exponential moving average of velocity
   speed        = 0,
   heading      = 0,
   last_heading = nil,    -- latched when speed drops; shown as stale heading
@@ -148,7 +152,11 @@ local function row(panel, y, label, value, vcol)
   local x0    = panelX(panel)
   local avail = panelW(panel)
   put(x0, y, label, C.label)
-  putr(x0, y, avail, value, vcol or C.value)
+  if panel == 1 then
+    put(x0 + #label, y, tostring(value or ""), vcol or C.value)
+  else
+    putr(x0, y, avail, value, vcol or C.value)
+  end
 end
 
 local function hline(panel, y)
@@ -302,13 +310,20 @@ local function correctedHeading(vx, vz)
   return (math.deg(math.atan2(vx, -vz)) + HEADING_OFFSET + 360) % 360
 end
 
--- Heading latch: update heading and remember last good value
+-- Heading latch: smooth velocity then derive heading
 local function updateHeading()
-  local hdg = correctedHeading(data.vel.x, data.vel.z)
-  data.heading = hdg
-  if data.speed > 0.5 then
+  -- Exponential moving average on velocity to kill oscillation noise
+  local a = HEADING_SMOOTH
+  data.vel_smooth.x = a * data.vel.x + (1 - a) * data.vel_smooth.x
+  data.vel_smooth.z = a * data.vel.z + (1 - a) * data.vel_smooth.z
+
+  local smooth_speed = math.sqrt(data.vel_smooth.x^2 + data.vel_smooth.z^2)
+  if smooth_speed >= HEADING_MIN_SPEED then
+    local hdg = correctedHeading(data.vel_smooth.x, data.vel_smooth.z)
+    data.heading      = hdg
     data.last_heading = hdg
   end
+  -- If below threshold: keep last_heading as-is, heading stays stale
 end
 
 -- Recalculate bearing/dist/ETA from current pos+dest+speed

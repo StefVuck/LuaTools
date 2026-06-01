@@ -57,8 +57,8 @@ local CFG = {
   dest_z = 0,
 
   -- Distance thresholds
-  arrival_radius  = 8,    -- blocks: cut engines, we're done
-  approach_radius = 64,   -- blocks: begin slowing down
+  arrival_radius  = 30,   -- blocks: cut engines, we're done
+  approach_radius = 90,   -- blocks: begin slowing down
 
   -- Speed (blocks/s) — used to scale the analog speed signal 0-15
   max_speed       = 10,
@@ -203,7 +203,7 @@ local function headingError(vx, vz, dest_x, dest_z, pos_x, pos_z)
   -- Current heading from velocity (degrees clockwise from North).
   -- CFG.heading_offset corrects for ships built facing a non-North direction.
   local speed = math.sqrt(vx*vx + vz*vz)
-  if speed < 0.5 then return 0 end  -- too slow to determine heading; hold course
+  if speed < 2.0 then return 0 end  -- below this velocity is too noisy to steer from
 
   local current_heading = (math.deg(math.atan2(vx, -vz)) + CFG.heading_offset + 360) % 360
   return signedAngleDiff(current_heading, target_bearing)
