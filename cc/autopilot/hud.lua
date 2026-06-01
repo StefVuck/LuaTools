@@ -62,19 +62,25 @@ local C = {
 -- State  (declared early so every function below can reference it)
 
 local data = {
-  name    = "?",
-  phase   = "waiting",
-  pos     = { x = 0, z = 0 },
-  dest    = { x = 0, z = 0 },
-  dist    = 0,
-  vel     = { x = 0, z = 0 },
-  speed   = 0,
-  bearing = 0,      -- degrees clockwise from North to destination
-  heading = 0,      -- degrees clockwise from North, current movement direction
-  err_deg = 0,      -- signed heading error (+ve = turn right)
-  zone    = "wait", -- fine / medium / coarse / wait
-  eta     = nil,
-  updated = 0,
+  -- Always live from sublevel
+  name         = "?",
+  pos          = { x = 0, z = 0 },
+  vel          = { x = 0, z = 0 },
+  speed        = 0,
+  heading      = 0,
+  last_heading = nil,    -- latched when speed drops; shown as stale heading
+  sublevel_ok  = false,  -- true when sublevel is readable this tick
+  sub_updated  = 0,      -- last time sublevel data was read
+
+  -- Only from autopilot packets
+  phase        = "off",
+  dest         = { x = 0, z = 0 },
+  bearing      = 0,
+  dist         = 0,
+  err_deg      = 0,
+  zone         = "off",
+  eta          = nil,
+  ap_updated   = 0,      -- last time an autopilot packet was received
 }
 
 local MAX_SPEED = 10   -- matches autopilot CFG.max_speed
@@ -190,10 +196,8 @@ local function drawCompass(panel, y0)
   local avail = PW - (panel > 1 and 1 or 0)
   local x0    = p_off + math.floor((avail - ROSE_W) / 2)
 
-  local hdg_oct
-  if data.speed > 0.5 then
-    hdg_oct = degToOctant(data.heading)
-  end
+  local active_hdg = data.speed > 0.5 and data.heading or data.last_heading
+  local hdg_oct    = active_hdg and degToOctant(active_hdg) or nil
   local brg_oct = degToOctant(data.bearing)
 
   -- Ring labels
@@ -234,9 +238,11 @@ local function drawCompass(panel, y0)
   local rx    = p_off
   local ry    = y0 + ROSE_H + 1
 
-  local hdg_str = data.speed > 0.5
-    and ("%03d %s"):format(math.floor(data.heading),
-                           dirs[degToOctant(data.heading) + 1])
+  local active_hdg = data.speed > 0.5 and data.heading or data.last_heading
+  local hdg_str = active_hdg
+    and ("%03d %s%s"):format(math.floor(active_hdg),
+                             dirs[degToOctant(active_hdg) + 1],
+                             data.speed < 0.5 and "*" or "")
     or  "--- --"
   local brg_str = ("%03d %s"):format(math.floor(data.bearing),
                                      dirs[brg_oct + 1])
@@ -256,42 +262,68 @@ local function correctedHeading(vx, vz)
   return (math.deg(math.atan2(vx, -vz)) + HEADING_OFFSET + 360) % 360
 end
 
-local function updateFromSublevel()
-  if not sublevel or not sublevel.isInPlotGrid() then return end
-  local pose   = sublevel.getLogicalPose()
-  local vel    = sublevel.getLinearVelocity()
-  data.name    = sublevel.getName()
-  data.pos     = { x = pose.position.x, z = pose.position.z }
-  data.vel     = { x = vel.x, z = vel.z }
-  data.speed   = math.sqrt(vel.x^2 + vel.z^2)
-  data.heading = correctedHeading(vel.x, vel.z)
-  data.updated = os.epoch("utc") / 1000
+-- Heading latch: update heading and remember last good value
+local function updateHeading()
+  local hdg = correctedHeading(data.vel.x, data.vel.z)
+  data.heading = hdg
+  if data.speed > 0.5 then
+    data.last_heading = hdg
+  end
 end
+
+-- Recalculate bearing/dist/ETA from current pos+dest+speed
+local function recalcNav()
+  local dx = data.dest.x - data.pos.x
+  local dz = data.dest.z - data.pos.z
+  data.dist    = math.sqrt(dx*dx + dz*dz)
+  data.bearing = (math.deg(math.atan2(dx, -dz)) + 360) % 360
+  data.eta     = (data.speed > 0.5 and data.ap_updated > 0)
+    and math.floor(data.dist / data.speed) or nil
+end
+
+local function updateFromSublevel()
+  local now = os.epoch("utc") / 1000
+  if not sublevel or not sublevel.isInPlotGrid() then
+    data.sublevel_ok = false
+    return
+  end
+  local pose       = sublevel.getLogicalPose()
+  local vel        = sublevel.getLinearVelocity()
+  data.sublevel_ok = true
+  data.name        = sublevel.getName()
+  data.pos         = { x = pose.position.x, z = pose.position.z }
+  data.vel         = { x = vel.x, z = vel.z }
+  data.speed       = math.sqrt(vel.x^2 + vel.z^2)
+  data.sub_updated = now
+  updateHeading()
+  recalcNav()
+end
+
+local AUTOPILOT_TIMEOUT = 10  -- seconds before autopilot considered offline
 
 local function updateFromPacket(msg)
   if type(msg) ~= "table" or msg.type ~= "autopilot" then return end
-  data.name    = msg.name    or data.name
-  data.phase   = msg.phase   or data.phase
-  data.pos     = msg.pos     or data.pos
-  data.dest    = msg.dest    or data.dest
-  data.dist    = msg.dist    or data.dist
-  data.err_deg = msg.err_deg or data.err_deg
+  local now     = os.epoch("utc") / 1000
+  data.phase    = msg.phase   or data.phase
+  data.dest     = msg.dest    or data.dest
+  data.err_deg  = msg.err_deg or data.err_deg
+  data.ap_updated = now
 
   local ae = math.abs(data.err_deg)
   data.zone = ae <= 10 and "fine" or ae <= 45 and "medium" or "coarse"
 
-  if msg.velocity then
-    data.vel     = msg.velocity
-    data.speed   = math.sqrt(msg.velocity.x^2 + msg.velocity.z^2)
-    data.heading = correctedHeading(msg.velocity.x, msg.velocity.z)
+  -- Prefer sublevel for pos/vel; only use packet values as fallback
+  if not data.sublevel_ok then
+    if msg.pos      then data.pos   = msg.pos   end
+    if msg.velocity then
+      data.vel   = msg.velocity
+      data.speed = math.sqrt(msg.velocity.x^2 + msg.velocity.z^2)
+      updateHeading()
+    end
+    if msg.name then data.name = msg.name end
   end
 
-  local dx = data.dest.x - data.pos.x
-  local dz = data.dest.z - data.pos.z
-  data.bearing = (math.deg(math.atan2(dx, -dz)) + 360) % 360
-  data.eta     = data.speed > 0.5
-    and math.floor(data.dist / data.speed) or nil
-  data.updated = os.epoch("utc") / 1000
+  recalcNav()
 end
 
 -- ---------------------------------------------------------------------------
@@ -320,23 +352,23 @@ local function fmtBearing(deg)
 end
 
 local function fmtHeading()
-  if data.speed < 0.5 then return "STATIONARY" end
   local dirs = { "N","NE","E","SE","S","SW","W","NW" }
-  local idx  = math.floor((data.heading + 22.5) / 45) % 8 + 1
-  return ("%03d deg %s"):format(math.floor(data.heading), dirs[idx])
+  local hdg  = data.speed > 0.5 and data.heading or data.last_heading
+  if not hdg then return "STATIONARY" end
+  local idx  = math.floor((hdg + 22.5) / 45) % 8 + 1
+  local suffix = data.speed < 0.5 and " (last)" or ""
+  return ("%03d deg %s%s"):format(math.floor(hdg), dirs[idx], suffix)
 end
 
 local function phaseColor(phase)
-  if phase == "arrived"    then return C.good  end
-  if phase == "navigating" then return C.value end
+  if phase == "arrived"    then return C.good   end
+  if phase == "navigating" then return C.value  end
+  if phase == "off"        then return C.border end
   return C.warn
 end
 
-local function stalenessColor()
-  local age = os.epoch("utc") / 1000 - data.updated
-  if age > 10 then return C.bad  end
-  if age > 4  then return C.warn end
-  return C.good
+local function apOnline()
+  return (os.epoch("utc") / 1000 - data.ap_updated) < AUTOPILOT_TIMEOUT
 end
 
 -- ---------------------------------------------------------------------------
@@ -344,59 +376,70 @@ end
 
 local function redraw()
   cls()
+  local ap = apOnline()
+  local now = os.epoch("utc") / 1000
 
-  -- ── Panel 1: Position & Destination ──────────────────────────────────────
+  -- ── Panel 1: Position ────────────────────────────────────────────────────
   panelHeader(1, "POSITION")
 
+  local subCol = data.sublevel_ok and C.good or C.bad
   row(1,  3, "Ship     ", data.name, C.cyan)
   hline(1, 4)
-  row(1,  5, "Position ", fmtCoord(data.pos.x,  data.pos.z))
-  row(1,  6, "Dest     ", fmtCoord(data.dest.x, data.dest.z))
+  row(1,  5, "Position ", fmtCoord(data.pos.x, data.pos.z),
+      data.sublevel_ok and C.value or C.border)
+  row(1,  6, "Dest     ",
+      ap and fmtCoord(data.dest.x, data.dest.z) or "no autopilot",
+      ap and C.value or C.border)
   hline(1, 7)
-  row(1,  8, "Distance ", fmtDist(data.dist))
-  row(1,  9, "Bearing  ", fmtBearing(data.bearing))
-  row(1, 10, "ETA      ", fmtETA(data.eta))
+  row(1,  8, "Distance ", ap and fmtDist(data.dist)       or "---", ap and C.value or C.border)
+  row(1,  9, "Bearing  ", ap and fmtBearing(data.bearing) or "---", ap and C.value or C.border)
+  row(1, 10, "ETA      ", ap and fmtETA(data.eta)         or "---", ap and C.value or C.border)
   hline(1, 11)
   row(1, 12, "Heading  ", fmtHeading())
   row(1, 13, "Speed    ", ("%.1f m/s"):format(data.speed))
   hline(1, 14)
 
-  -- Error + zone
   local aeCol = math.abs(data.err_deg) <= 10 and C.good
-             or math.abs(data.err_deg) <= 45 and C.warn
-             or C.bad
+             or math.abs(data.err_deg) <= 45 and C.warn or C.bad
   row(1, 15, "Hdg Err  ",
-      (data.err_deg >= 0 and "+" or "") .. ("%.1f deg"):format(data.err_deg),
-      aeCol)
+      ap and (data.err_deg >= 0 and "+" or "") .. ("%.1f deg"):format(data.err_deg) or "---",
+      ap and aeCol or C.border)
 
   local zoneCol = data.zone == "fine"   and C.good
                or data.zone == "medium" and C.warn
-               or data.zone == "wait"   and C.border
+               or data.zone == "off"    and C.border
                or C.bad
   row(1, 16, "Steer    ", data.zone:upper(), zoneCol)
 
   hline(1, H - 1)
-  row(1, H, "DATA     ", data.updated > 0 and "LIVE" or "WAIT", stalenessColor())
+  local subAge = now - data.sub_updated
+  local subStr = data.sublevel_ok and "LIVE" or "NO SUBLEVEL"
+  local subAgeCol = subAge < 2 and C.good or subAge < 5 and C.warn or C.bad
+  row(1, H, "SHIP     ", subStr, subAgeCol)
 
-  -- ── Panel 2: Autopilot Status ─────────────────────────────────────────────
-  panelHeader(2, "AUTOPILOT")
+  -- ── Panel 2: Autopilot ────────────────────────────────────────────────────
+  panelHeader(2, ap and "AUTOPILOT" or "AUTOPILOT (off)")
 
-  local phaseTxt = data.phase:upper()
-  row(2, 3, "Mode     ", phaseTxt, phaseColor(data.phase))
+  row(2, 3, "Mode     ", ap and data.phase:upper() or "OFFLINE",
+      ap and phaseColor(data.phase) or C.border)
   hline(2, 4)
 
   row(2, 5, "Speed    ", ("%.2f m/s"):format(data.speed))
   speedBar(2, 6, data.speed, MAX_SPEED)
   hline(2, 7)
 
-  -- Velocity components
   row(2,  8, "Vx       ", ("% .3f"):format(data.vel.x))
   row(2,  9, "Vz       ", ("% .3f"):format(data.vel.z))
   hline(2, 10)
 
-  -- Coords again for quick glance
   row(2, 11, "X        ", ("%d"):format(math.floor(data.pos.x)))
   row(2, 12, "Z        ", ("%d"):format(math.floor(data.pos.z)))
+
+  hline(2, H - 1)
+  local apAge = now - data.ap_updated
+  local apStr = ap and ("%.0fs ago"):format(apAge) or "OFFLINE"
+  local apCol = ap and C.good or C.border
+  row(2, H, "AP PKT   ", apStr, apCol)
 
   -- ── Panel 3: Compass ─────────────────────────────────────────────────────
   panelHeader(3, "COMPASS")
