@@ -135,22 +135,29 @@ local function panelHeader(panel, title)
   put(x0, 2, ("-"):rep(PW - (panel > 1 and 1 or 0)), C.border)
 end
 
+-- x0: panels are 1-indexed; panel 1 starts at col 1, panel 2 at PW+1, etc.
+-- avail: panel 1 has full PW width; panels 2+ lose 1 col to the divider.
+local function panelX(panel)
+  return (panel - 1) * PW + 1
+end
+local function panelW(panel)
+  return panel == 1 and PW or PW - 1
+end
+
 local function row(panel, y, label, value, vcol)
-  local x0    = (panel - 1) * PW + (panel > 1 and 1 or 0)
-  local avail = PW - (panel > 1 and 1 or 0)
+  local x0    = panelX(panel)
+  local avail = panelW(panel)
   put(x0, y, label, C.label)
   putr(x0, y, avail, value, vcol or C.value)
 end
 
 local function hline(panel, y)
-  local x0    = (panel - 1) * PW + (panel > 1 and 1 or 0)
-  local avail = PW - (panel > 1 and 1 or 0)
-  put(x0, y, ("-"):rep(avail), C.border)
+  put(panelX(panel), y, ("-"):rep(panelW(panel)), C.border)
 end
 
 local function speedBar(panel, y, speed, maxspd)
-  local x0    = (panel - 1) * PW + (panel > 1 and 1 or 0)
-  local avail = PW - (panel > 1 and 1 or 0)
+  local x0    = panelX(panel)
+  local avail = panelW(panel)
   local frac  = math.min(1, speed / math.max(1, maxspd))
   local filled = math.floor(frac * avail)
   local col   = frac < 0.5 and C.good or frac < 0.85 and C.warn or C.bad
@@ -208,80 +215,81 @@ local function degToOctant(deg)
 end
 
 local function drawCompass(panel, y0)
-  local p_off = (panel - 1) * PW + (panel > 1 and 1 or 0)
-  local avail = PW - (panel > 1 and 1 or 0)
-  local x0    = p_off + math.floor((avail - ROSE_W) / 2)
+  local x0  = panelX(panel) + math.floor((panelW(panel) - ROSE_W) / 2)
+  local rx  = panelX(panel)
+  local dirs = { "N","NE","E","SE","S","SW","W","NW" }
 
   local active_hdg = data.speed > 0.5 and data.heading or data.last_heading
-  local hdg_oct    = active_hdg and degToOctant(active_hdg) or nil
-  local brg_oct    = degToOctant(data.bearing)
-  local home_oct   = HOME and degToOctant(data.home_bearing) or nil
 
-  -- Ring labels — priority: heading > bearing > home > dim
-  for _, pt in ipairs(ROSE_POINTS) do
-    local label, dc, dr, oct = pt[1], pt[2], pt[3], pt[4]
+  -- The rose rotates so that the bearing-to-destination sits at the top.
+  -- When no autopilot, default to North-up (up_oct = 0).
+  local up_oct = (data.ap_updated > 0)
+    and degToOctant(data.bearing) or 0
+
+  -- Absolute octants for heading and home
+  local hdg_abs  = active_hdg and degToOctant(active_hdg) or nil
+  local home_abs = HOME and degToOctant(data.home_bearing) or nil
+
+  -- Draw the 8 ring labels.
+  -- Display position p (0=top, clockwise) shows the direction whose absolute
+  -- octant is (up_oct + p) % 8.
+  for display_pos, pt in ipairs(ROSE_POINTS) do
+    local dc, dr    = pt[2], pt[3]
+    local abs_oct   = (up_oct + display_pos - 1) % 8
+    local label     = dirs[abs_oct + 1]
+
     local col
-    if hdg_oct and oct == hdg_oct then
-      col = colors.yellow
-    elseif oct == brg_oct and data.ap_updated > 0 then
-      col = colors.cyan
-    elseif home_oct and oct == home_oct then
-      col = C.home
+    if abs_oct == 0 then
+      col = colors.red                          -- N is always red
+    elseif hdg_abs and abs_oct == hdg_abs then
+      col = colors.yellow                       -- heading direction
+    elseif home_abs and abs_oct == home_abs then
+      col = C.home                              -- home direction
     else
       col = C.border
     end
     put(x0 + dc, y0 + dr, label, col)
   end
 
-  -- Centre cell: heading arrow
+  -- Centre arrow: heading relative to the rotated rose.
+  -- rel = 0 means ship is heading toward bearing (straight up on rose).
   local cx = x0 + math.floor(ROSE_W / 2)
   local cy = y0 + math.floor(ROSE_H / 2)
-  if hdg_oct then
-    put(cx, cy, HDG_CHAR[hdg_oct], colors.yellow)
+  if active_hdg then
+    local rel_oct = degToOctant((active_hdg - data.bearing + 360) % 360)
+    local arrow   = HDG_CHAR[rel_oct]
+    put(cx, cy, arrow, data.speed > 0.5 and colors.yellow or C.border)
   else
     put(cx, cy, "+", C.border)
   end
 
-  -- Bearing ring tick (cyan, autopilot online only)
-  if data.ap_updated > 0 and (not hdg_oct or brg_oct ~= hdg_oct) then
-    local bp = ROSE_POINTS[brg_oct + 1]
-    if bp then
-      put(x0 + bp[2], y0 + bp[3], BRG_CHAR[brg_oct], colors.cyan)
-    end
-  end
-
-  -- Home ring tick (pink H, only if home defined and different from heading)
-  if home_oct and (not hdg_oct or home_oct ~= hdg_oct) then
-    local hp = ROSE_POINTS[home_oct + 1]
-    if hp then
-      put(x0 + hp[2], y0 + hp[3], "H", C.home)
-    end
+  -- Home ring tick: overwrite that position's label with pink H
+  if home_abs then
+    local home_disp = (home_abs - up_oct + 8) % 8  -- display position 0-7
+    local hp = ROSE_POINTS[home_disp + 1]
+    if hp then put(x0 + hp[2], y0 + hp[3], "H", C.home) end
   end
 
   -- Readouts below rose
-  local dirs = { "N","NE","E","SE","S","SW","W","NW" }
-  local rx   = p_off
-  local ry   = y0 + ROSE_H + 1
+  local ry = y0 + ROSE_H + 1
 
   local hdg_str = active_hdg
     and ("%03d %s%s"):format(math.floor(active_hdg),
                              dirs[degToOctant(active_hdg) + 1],
                              data.speed < 0.5 and "*" or "")
-    or  "--- --"
-
+    or "--- --"
   put(rx,     ry,     "HDG ", C.label)
-  put(rx + 4, ry,     hdg_str,
-      data.speed > 0.5 and colors.yellow or C.border)
+  put(rx + 4, ry,     hdg_str, data.speed > 0.5 and colors.yellow or C.border)
 
-  if data.ap_updated > 0 then
-    local brg_str = ("%03d %s"):format(math.floor(data.bearing), dirs[brg_oct + 1])
-    put(rx,     ry + 1, "BRG ", C.label)
-    put(rx + 4, ry + 1, brg_str, colors.cyan)
-  end
+  local brg_str = data.ap_updated > 0
+    and ("%03d %s"):format(math.floor(data.bearing), dirs[up_oct + 1])
+    or  "--- --"
+  put(rx,     ry + 1, "BRG ", C.label)
+  put(rx + 4, ry + 1, brg_str, data.ap_updated > 0 and colors.cyan or C.border)
 
   if HOME then
     local home_str = ("%03d %s"):format(math.floor(data.home_bearing),
-                                        dirs[(home_oct or 0) + 1])
+                                        dirs[(home_abs or 0) + 1])
     put(rx,     ry + 2, "HOM ", C.label)
     put(rx + 4, ry + 2, home_str, C.home)
   end
