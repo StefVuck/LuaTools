@@ -88,6 +88,11 @@ local data = {
   sublevel_ok  = false,  -- true when sublevel is readable this tick
   sub_updated  = 0,      -- last time sublevel data was read
 
+  -- Notification overlay
+  notify_msg   = nil,    -- string or nil
+  notify_until = 0,      -- epoch seconds when it expires
+  notify_flash = false,  -- toggled each render tick for blinking
+
   -- Only from autopilot packets
   phase        = "off",
   dest         = { x = 0, z = 0 },
@@ -364,10 +369,23 @@ end
 
 local AUTOPILOT_TIMEOUT = 10  -- seconds before autopilot considered offline
 
+local NOTIFY_DURATION = 8  -- seconds the banner stays up
+
+local function notify(msg)
+  data.notify_msg   = msg
+  data.notify_until = os.epoch("utc") / 1000 + NOTIFY_DURATION
+end
+
 local function updateFromPacket(msg)
   if type(msg) ~= "table" or msg.type ~= "autopilot" then return end
-  local now     = os.epoch("utc") / 1000
-  data.phase    = msg.phase   or data.phase
+  local now      = os.epoch("utc") / 1000
+  local old_phase = data.phase
+  data.phase     = msg.phase  or data.phase
+
+  -- Trigger banner on arrival
+  if data.phase == "arrived" and old_phase ~= "arrived" then
+    notify("Autopilot Routing Complete")
+  end
   data.dest     = msg.dest    or data.dest
   data.err_deg  = msg.err_deg or data.err_deg
   data.ap_updated = now
@@ -436,6 +454,70 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Render
+
+local function drawNotification()
+  local now = os.epoch("utc") / 1000
+  if not data.notify_msg or now > data.notify_until then
+    data.notify_msg = nil
+    return
+  end
+
+  -- Flash: visible for 0.6s, hidden for 0.4s per second
+  data.notify_flash = (now % 1.0) < 0.6
+
+  if not data.notify_flash then return end
+
+  local msg     = data.notify_msg
+  local bw      = math.min(W - 4, #msg + 6)  -- box width
+  local bh      = 5
+  local bx      = math.floor((W - bw) / 2) + 1
+  local by      = math.floor((H - bh) / 2) + 1
+
+  -- Background fill
+  for r = by, by + bh - 1 do
+    for c = bx, bx + bw - 1 do
+      mon.setCursorPos(c, r)
+      mon.setBackgroundColor(colors.black)
+      mon.setTextColor(colors.black)
+      mon.write(" ")
+    end
+  end
+
+  -- Border
+  local border_col = colors.cyan
+  -- Top and bottom lines
+  mon.setTextColor(border_col)
+  mon.setBackgroundColor(colors.black)
+  mon.setCursorPos(bx, by)
+  mon.write("+" .. ("-"):rep(bw - 2) .. "+")
+  mon.setCursorPos(bx, by + bh - 1)
+  mon.write("+" .. ("-"):rep(bw - 2) .. "+")
+  -- Side lines
+  for r = by + 1, by + bh - 2 do
+    mon.setCursorPos(bx, r)            mon.write("|")
+    mon.setCursorPos(bx + bw - 1, r)  mon.write("|")
+  end
+
+  -- Message centred inside box
+  local mx = bx + math.floor((bw - #msg) / 2)
+  local my = by + math.floor(bh / 2)
+  mon.setCursorPos(mx, my)
+  mon.setTextColor(colors.yellow)
+  mon.setBackgroundColor(colors.black)
+  mon.write(msg)
+
+  -- Countdown bar at the bottom of the box
+  local remaining = math.max(0, data.notify_until - now)
+  local bar_w     = bw - 2
+  local filled    = math.floor(remaining / NOTIFY_DURATION * bar_w)
+  mon.setCursorPos(bx + 1, by + bh - 2)
+  mon.setTextColor(colors.lime)
+  mon.write(("|"):rep(filled))
+  if filled < bar_w then
+    mon.setTextColor(C.border)
+    mon.write(("-"):rep(bar_w - filled))
+  end
+end
 
 local function redraw()
   cls()
@@ -510,6 +592,9 @@ local function redraw()
   -- ── Panel 3: Compass ─────────────────────────────────────────────────────
   panelHeader(3, "COMPASS")
   drawCompass(3, 3)
+
+  -- Notification overlay (drawn last so it appears on top)
+  drawNotification()
 end
 
 -- ---------------------------------------------------------------------------

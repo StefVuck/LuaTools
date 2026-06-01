@@ -58,7 +58,7 @@ local CFG = {
 
   -- Distance thresholds
   arrival_radius  = 30,   -- blocks: cut engines, we're done
-  approach_radius = 90,   -- blocks: begin slowing down
+  approach_radius = 120,  -- blocks: begin slowing down
 
   -- Speed (blocks/s) — used to scale the analog speed signal 0-15
   max_speed       = 10,
@@ -262,10 +262,11 @@ local function applySteer(error_deg, base_frac)
 
   else
     -- ── COARSE: one motor fully reversed, other full forward ───────────────
+    -- Primary is cut entirely to stop forward momentum and allow a tight turn.
     -- sign > 0 = turn right = left forward, right reversed
     setMotor("left",  base_frac, sign < 0, false)
     setMotor("right", base_frac, sign > 0, false)
-    setPrimary(base_frac, false)
+    setPrimary(0, true)
   end
 end
 
