@@ -1,31 +1,34 @@
 -- display.lua
--- Central map display with multi-zoom and redstone zoom control.
+-- Scrollable, pannable, zoomable map display for CC:Tweaked + CC:Sable.
 --
--- Map files expected (widest -> closest):
---   map_overworld_z1.lua  (1:20 - widest overview)
---   map_overworld_z2.lua  (1:10)
---   map_overworld_z3.lua  (1:5)
---   map_overworld_z4.lua  (1:3)
---   map_overworld_z5.lua  (1:2)
---   map_overworld_z6.lua  (1:1  - 1 block per pixel)
---   map_nether_z*.lua     (optional, same structure)
+-- Requires a single high-resolution map file per dimension.
+-- Generate with:
+--   python map.py input.png map_overworld.lua \
+--     --width 500 --height 670 \
+--     --bbox -83 -1183 1917 1497 \
+--     --dimension overworld --colours 14
+-- Adjust --width/--height to keep your bbox aspect ratio; ~4 blocks/pixel
+-- gives good detail. Larger = more detail, bigger file.
 --
 -- Controls:
---   Monitor touch  - cycle zoom level
---   Redstone       - any side, analog 0-15 selects zoom (0=widest, 15=closest)
---   R key          - reload all map files from disk
---   D key          - toggle dimension
+--   Monitor touch    - centre view on tapped location
+--   Arrow keys       - pan
+--   Z / X            - zoom in / out
+--   R                - reload map + reset view
+--   D                - toggle dimension
+--   Redstone analog  - zoom (0 = widest, 15 = closest)
 --
--- Scale indicator: top-right corner shows "1:S" (blocks per pixel) after each render.
---
--- Marker colours: generate maps with --colours 14 so palette slots 14 and 16 stay free.
---   colors.red   (slot 16) = train pixel dots and all marker text
---   colors.black (slot 14) = dark background for rings, labels, and scale indicator
+-- Markers:
+--   Red dot          - train (with black halo ring)
+--   ^ > v < *        - airship heading + name + speed
+--   \127 (house)     - base + name
 
-local CHANNEL        = "train_map"
-local REDRAW_PERIOD  = 0.25
-local TRAIN_TIMEOUT  = 600
-local AIRSHIP_TIMEOUT = 300   -- seconds before an unseen airship is dropped
+local CHANNEL         = "train_map"
+local REDRAW_PERIOD   = 0.25
+local TRAIN_TIMEOUT   = 600
+local AIRSHIP_TIMEOUT = 300
+local PAN_STEP        = 8      -- screen pixels per arrow keypress
+local ZOOM_STEP       = 1.25   -- scale multiplier per Z/X keypress
 
 -- ---------------------------------------------------------------------------
 -- Static base markers  (fill in your bases here)
@@ -37,9 +40,9 @@ local BASES = {
 -- ---------------------------------------------------------------------------
 -- Peripherals
 
-local function findFirst(type_)
-  for _, side in ipairs(peripheral.getNames()) do
-    if peripheral.getType(side) == type_ then return side end
+local function findFirst(t)
+  for _, s in ipairs(peripheral.getNames()) do
+    if peripheral.getType(s) == t then return s end
   end
 end
 
@@ -50,11 +53,11 @@ rednet.open(modemSide)
 
 mon.setTextScale(0.5)
 local CW, CH = mon.getSize()
-local PW, PH = CW, CH * 2
-print(("Monitor: %d x %d chars -> map %d x %d px"):format(CW, CH, PW, PH))
+local PH = CH * 2
+print(("Monitor: %d x %d chars  ->  %d x %d px"):format(CW, CH, CW, PH))
 
 -- ---------------------------------------------------------------------------
--- Map loading
+-- Map loading  (single file per dimension)
 
 local function loadMap(path)
   if not fs.exists(path) then return nil end
@@ -63,53 +66,114 @@ local function loadMap(path)
 end
 
 local MAP_FILES = {
-  overworld = {
-    "map_overworld_z1.lua",   -- 1:20  widest overview
-    "map_overworld_z2.lua",   -- 1:10
-    "map_overworld_z3.lua",   -- 1:5
-    "map_overworld_z4.lua",   -- 1:3
-    "map_overworld_z5.lua",   -- 1:2
-    "map_overworld_z6.lua",   -- 1:1  one block per pixel
-  },
-  nether = {
-    "map_nether_z1.lua",
-    "map_nether_z2.lua",
-    "map_nether_z3.lua",
-    "map_nether_z4.lua",
-    "map_nether_z5.lua",
-    "map_nether_z6.lua",
-  },
+  overworld = "map_overworld.lua",
+  nether    = "map_nether.lua",
 }
-local allMaps = { overworld = {}, nether = {} }
+local maps = { overworld = nil, nether = nil }
 
 local function loadAllMaps()
-  for dim, files in pairs(MAP_FILES) do
-    allMaps[dim] = {}
-    for _, f in ipairs(files) do
-      local m = loadMap(f)
-      if m then allMaps[dim][#allMaps[dim] + 1] = m end
+  for dim, f in pairs(MAP_FILES) do
+    maps[dim] = loadMap(f)
+    if maps[dim] then
+      print(("  %s: %dx%d px"):format(dim, maps[dim].width, maps[dim].height))
     end
   end
-  print(("Loaded: %d overworld, %d nether zoom levels"):format(
-    #allMaps.overworld, #allMaps.nether))
 end
 
 loadAllMaps()
-assert(#allMaps.overworld > 0 or #allMaps.nether > 0, "no maps loaded")
+assert(maps.overworld or maps.nether, "no maps loaded")
 
-local currentDim = (#allMaps.overworld > 0) and "overworld" or "nether"
-local zoomLevel  = 1   -- 1 = widest, N = closest
+local currentDim = maps.overworld and "overworld" or "nether"
 
-local function currentMap()
-  local list = allMaps[currentDim]
-  if not list or #list == 0 then return nil end
-  return list[math.min(zoomLevel, #list)]
+local function currentMap() return maps[currentDim] end
+
+-- ---------------------------------------------------------------------------
+-- Viewport
+--   view.left / view.top  : top-left corner in map-pixel space
+--   view.scale            : map pixels per screen pixel (1 = max detail)
+
+local view = { left = 0.0, top = 0.0, scale = 1.0 }
+
+local function maxScale(map)
+  if not map then return 1.0 end
+  return math.max(map.width / CW, map.height / PH)
+end
+
+local function clampView(map)
+  if not map then return end
+  local ms = maxScale(map)
+  view.scale = math.max(1.0, math.min(ms, view.scale))
+  view.left  = math.max(0, math.min(map.width  - CW * view.scale, view.left))
+  view.top   = math.max(0, math.min(map.height - PH * view.scale, view.top))
+end
+
+local function resetView()
+  local map = currentMap()
+  if not map then return end
+  view.scale = maxScale(map)
+  view.left  = 0
+  view.top   = 0
+end
+
+local function zoomAround(newScale, pivotMapX, pivotMapY)
+  local map = currentMap()
+  if not map then return end
+  view.scale = math.max(1.0, math.min(maxScale(map), newScale))
+  view.left  = pivotMapX - (CW / 2) * view.scale
+  view.top   = pivotMapY - (PH / 2) * view.scale
+  clampView(map)
+end
+
+local function zoomIn()
+  local cx = view.left + (CW / 2) * view.scale
+  local cy = view.top  + (PH / 2) * view.scale
+  zoomAround(view.scale / ZOOM_STEP, cx, cy)
+end
+
+local function zoomOut()
+  local cx = view.left + (CW / 2) * view.scale
+  local cy = view.top  + (PH / 2) * view.scale
+  zoomAround(view.scale * ZOOM_STEP, cx, cy)
+end
+
+local function pan(dsx, dsy)
+  local map = currentMap()
+  if not map then return end
+  view.left = view.left + dsx * view.scale
+  view.top  = view.top  + dsy * view.scale
+  clampView(map)
+end
+
+local function centreTouchAt(charX, charY)
+  local map = currentMap()
+  if not map then return end
+  -- Convert character click to map pixel, then centre view there
+  local mapX = view.left + (charX - 1) * view.scale
+  local mapY = view.top  + ((charY - 1) * 2) * view.scale
+  view.left  = mapX - (CW / 2) * view.scale
+  view.top   = mapY - (PH / 2) * view.scale
+  clampView(map)
+end
+
+resetView()
+
+-- ---------------------------------------------------------------------------
+-- Coordinate transforms
+
+-- World position -> screen pixel (0-indexed; may be off-screen)
+local function worldToScreen(map, wx, wz)
+  local fx  = (wx - map.bbox.minX) / (map.bbox.maxX - map.bbox.minX)
+  local fy  = (wz - map.bbox.minZ) / (map.bbox.maxZ - map.bbox.minZ)
+  local mpx = fx * map.width
+  local mpy = fy * map.height
+  return math.floor((mpx - view.left) / view.scale + 0.5),
+         math.floor((mpy - view.top)  / view.scale + 0.5)
 end
 
 -- ---------------------------------------------------------------------------
 -- Palette
--- Only 15 CC colour slots are used for map data so that colors.red is never
--- overwritten by applyPalette and remains exclusively for train markers.
+-- With --colours 14, indices 0-13 are used; slot 14 (colors.black) and
+-- colors.red (slot 16, never in PALETTE_SLOTS) remain free for markers.
 
 local PALETTE_SLOTS = {
   colors.white, colors.orange, colors.magenta, colors.lightBlue,
@@ -138,30 +202,26 @@ local hexVal = {}
 for i = 0, 15 do hexVal[string.format("%x", i)] = i end
 
 local function pixelAt(map, x, y)
-  if x < 0 or x >= map.width or y < 0 or y >= map.height then return 0 end
+  x = math.floor(x); y = math.floor(y)
+  -- Return slot 14 (colors.black = near-black) for out-of-map areas
+  if x < 0 or x >= map.width or y < 0 or y >= map.height then return 14 end
   local idx = y * map.width + x + 1
   return hexVal[map.pixels:sub(idx, idx)] or 0
 end
 
-local function worldToPixel(map, wx, wz)
-  local fx = (wx - map.bbox.minX) / (map.bbox.maxX - map.bbox.minX)
-  local fy = (wz - map.bbox.minZ) / (map.bbox.maxZ - map.bbox.minZ)
-  return math.floor(fx * map.width + 0.5), math.floor(fy * map.height + 0.5)
-end
-
+-- trainPixels and airshipPixels store SCREEN pixel coords (sx, sy 0-indexed)
 local trainPixels   = {}
 local airshipPixels = {}
 
-local function isTrainAt(px, py)
+local function isTrainAt(sx, sy)
   for _, t in ipairs(trainPixels) do
-    if t.dim == currentDim and t.px == px and t.py == py then return t end
+    if t.sx == sx and t.sy == sy then return t end
   end
 end
 
--- Returns true if any adjacent pixel (4-connected) contains a train marker.
-local function isAdjacentToTrain(px, py)
-  return isTrainAt(px-1, py) or isTrainAt(px+1, py) or
-         isTrainAt(px, py-1) or isTrainAt(px, py+1)
+local function isAdjacentToTrain(sx, sy)
+  return isTrainAt(sx-1, sy) or isTrainAt(sx+1, sy) or
+         isTrainAt(sx, sy-1) or isTrainAt(sx, sy+1)
 end
 
 local HALF = "\143"
@@ -172,17 +232,19 @@ local function render()
   applyPalette(map)
 
   for cy = 1, CH do
-    local pyTop = (cy - 1) * 2
-    local pyBot = pyTop + 1
+    local syTop = (cy - 1) * 2
+    local syBot = syTop + 1
     local chars, fgs, bgs = {}, {}, {}
     for cx = 1, CW do
-      local px   = cx - 1
-      local tIdx = pixelAt(map, px, pyTop)
-      local bIdx = pixelAt(map, px, pyBot)
-      local topTr   = isTrainAt(px, pyTop)
-      local botTr   = isTrainAt(px, pyBot)
-      local topRing = not topTr and isAdjacentToTrain(px, pyTop)
-      local botRing = not botTr and isAdjacentToTrain(px, pyBot)
+      local sx   = cx - 1
+      local tIdx = pixelAt(map, view.left + sx * view.scale, view.top + syTop * view.scale)
+      local bIdx = pixelAt(map, view.left + sx * view.scale, view.top + syBot * view.scale)
+
+      local topTr   = isTrainAt(sx, syTop)
+      local botTr   = isTrainAt(sx, syBot)
+      local topRing = not topTr and isAdjacentToTrain(sx, syTop)
+      local botRing = not botTr and isAdjacentToTrain(sx, syBot)
+
       chars[cx] = HALF
       fgs[cx] = colors.toBlit(
         topTr and TRAIN_COLOUR or topRing and colors.black or HEX_TO_SLOT[tIdx])
@@ -195,75 +257,78 @@ local function render()
 end
 
 -- ---------------------------------------------------------------------------
--- Scale indicator  ("1:S" in top-right corner, using reserved palette slots)
---
--- With --colours 14, map pixel values only use indices 0-13, so:
---   colors.black (HEX_TO_SLOT[14]) - never written by applyPalette, safe to repurpose
---   TRAIN_COLOUR (colors.red)      - set to 0xff0040 by applyPalette, use for text fg
+-- HUD overlays
 
-local function renderScaleIndicator()
-  local map = currentMap()
-  if not map then return end
-  local s = math.floor((map.bbox.maxX - map.bbox.minX) / map.width + 0.5)
-  local label = "1:" .. tostring(s)
-  local len   = #label
-  local fg = colors.toBlit(TRAIN_COLOUR)
-  local bg = colors.toBlit(colors.black)
-  mon.setCursorPos(CW - len + 1, 1)
-  mon.blit(label, fg:rep(len), bg:rep(len))
-end
-
-local function blitLabel(cx, cy, icon, name)
+local function blitLabel(cx, cy, icon, label)
   local fg = colors.toBlit(TRAIN_COLOUR)
   local bg = colors.toBlit(colors.black)
   if cx < 1 or cx > CW or cy < 1 or cy > CH then return end
   mon.setCursorPos(cx, cy)
   mon.blit(icon, fg, bg)
-  if name and #name > 0 and cx + 1 <= CW then
-    local label = name:sub(1, CW - cx)
+  if label and #label > 0 and cx + 1 <= CW then
+    local s = label:sub(1, CW - cx)
     mon.setCursorPos(cx + 1, cy)
-    mon.blit(label, fg:rep(#label), bg:rep(#label))
+    mon.blit(s, fg:rep(#s), bg:rep(#s))
   end
 end
 
--- Render static base markers as house icons with name labels.
+local function renderHUD()
+  local map = currentMap()
+  if not map then return end
+  local fg = colors.toBlit(TRAIN_COLOUR)
+  local bg = colors.toBlit(colors.black)
+
+  -- Top-right: scale indicator  "1:N"
+  local bpp = view.scale * (map.bbox.maxX - map.bbox.minX) / map.width
+  local scaleStr = "1:" .. tostring(math.max(1, math.floor(bpp + 0.5)))
+  local slen = #scaleStr
+  mon.setCursorPos(CW - slen + 1, 1)
+  mon.blit(scaleStr, fg:rep(slen), bg:rep(slen))
+
+  -- Top-left: centre world coordinates  "x### z###"
+  local cmx = view.left + (CW / 2) * view.scale
+  local cmy = view.top  + (PH / 2) * view.scale
+  local wx  = map.bbox.minX + cmx / map.width  * (map.bbox.maxX - map.bbox.minX)
+  local wz  = map.bbox.minZ + cmy / map.height * (map.bbox.maxZ - map.bbox.minZ)
+  local coordStr = ("x%d z%d"):format(math.floor(wx), math.floor(wz))
+  local clen = #coordStr
+  mon.setCursorPos(1, 1)
+  mon.blit(coordStr, fg:rep(clen), bg:rep(clen))
+end
+
+local function headingChar(vx, vz)
+  local speed = math.sqrt(vx * vx + vz * vz)
+  if speed < 0.5 then return "*" end
+  local deg = math.deg(math.atan2(-vz, vx))
+  if deg < 0 then deg = deg + 360 end
+  if     deg >= 45  and deg < 135 then return "^"
+  elseif deg >= 135 and deg < 225 then return "<"
+  elseif deg >= 225 and deg < 315 then return "v"
+  else                                  return ">"
+  end
+end
+
 local function renderBases()
   local map = currentMap()
   if not map or #BASES == 0 then return end
   for _, base in ipairs(BASES) do
     if base.dim == currentDim then
-      local px, py = worldToPixel(map, base.x, base.z)
-      if px >= 0 and px < CW and py >= 0 and py < PH then
-        blitLabel(px + 1, math.floor(py / 2) + 1, "\127", base.name)
+      local sx, sy = worldToScreen(map, base.x, base.z)
+      if sx >= 0 and sx < CW and sy >= 0 and sy < PH then
+        blitLabel(sx + 1, math.floor(sy / 2) + 1, "\127", base.name)
       end
     end
   end
 end
 
--- Returns a heading character based on velocity direction.
--- In Minecraft: +X = East, -Z = North, +Z = South, -X = West.
-local function headingChar(vx, vz)
-  local speed = math.sqrt(vx * vx + vz * vz)
-  if speed < 0.5 then return "*" end
-  -- atan2(-vz, vx): 0=East, 90=North, 180=West, 270=South (normalised 0-360)
-  local deg = math.deg(math.atan2(-vz, vx))
-  if deg < 0 then deg = deg + 360 end
-  if deg >= 45 and deg < 135 then return "^"   -- North
-  elseif deg >= 135 and deg < 225 then return "<" -- West
-  elseif deg >= 225 and deg < 315 then return "v" -- South
-  else return ">"                                  -- East
-  end
-end
-
--- Render airship markers with heading arrow and speed label.
 local function renderAirships()
   for _, a in ipairs(airshipPixels) do
-    local cx    = a.px + 1
-    local cy    = math.floor(a.py / 2) + 1
-    local speed = math.sqrt((a.vx) ^ 2 + (a.vz) ^ 2)
-    local icon  = headingChar(a.vx, a.vz)
-    local label = string.format("%s %.1f/s", a.name, speed)
-    blitLabel(cx, cy, icon, label)
+    if a.sx >= 0 and a.sx < CW and a.sy >= 0 and a.sy < PH then
+      local speed = math.sqrt(a.vx ^ 2 + a.vz ^ 2)
+      blitLabel(a.sx + 1, math.floor(a.sy / 2) + 1,
+        headingChar(a.vx, a.vz),
+        ("%s %.1f/s"):format(a.name, speed))
+    end
   end
 end
 
@@ -280,29 +345,28 @@ local function lerp(a, b, t) return a + (b - a) * t end
 local function recomputeTrainPositions()
   trainPixels = {}
   local now = os.epoch("utc") / 1000
+  local map = currentMap()
   for name, t in pairs(trains) do
     if t.lastSeen and (now - t.lastSeen) > TRAIN_TIMEOUT then
       trains[name] = nil
-    else
-      local map = currentMap()
-      if map and t.dim == currentDim and t.lastStation then
-        local from = stations[t.lastStation]
-        if t.atStation and from then
-          local px, py = worldToPixel(map, from.coords.x, from.coords.z)
-          trainPixels[#trainPixels + 1] = { dim = t.dim, px = px, py = py, name = name }
-        elseif t.nextStation and stations[t.nextStation] and from then
-          local to  = stations[t.nextStation]
-          local key = t.lastStation .. ">" .. t.nextStation
-          local eta = edges[key] and edges[key].knownSeconds or 60
-          local progress = math.min(1, (now - (t.departedAt or now)) / eta)
-          local px, py = worldToPixel(map,
-            lerp(from.coords.x, to.coords.x, progress),
-            lerp(from.coords.z, to.coords.z, progress))
-          trainPixels[#trainPixels + 1] = { dim = t.dim, px = px, py = py, name = name }
-        elseif from then
-          local px, py = worldToPixel(map, from.coords.x, from.coords.z)
-          trainPixels[#trainPixels + 1] = { dim = t.dim, px = px, py = py, name = name }
-        end
+    elseif map and t.dim == currentDim and t.lastStation then
+      local from = stations[t.lastStation]
+      local wx, wz
+      if t.atStation and from then
+        wx, wz = from.coords.x, from.coords.z
+      elseif t.nextStation and stations[t.nextStation] and from then
+        local to  = stations[t.nextStation]
+        local key = t.lastStation .. ">" .. t.nextStation
+        local eta = edges[key] and edges[key].knownSeconds or 60
+        local p   = math.min(1, (now - (t.departedAt or now)) / eta)
+        wx = lerp(from.coords.x, to.coords.x, p)
+        wz = lerp(from.coords.z, to.coords.z, p)
+      elseif from then
+        wx, wz = from.coords.x, from.coords.z
+      end
+      if wx then
+        local sx, sy = worldToScreen(map, wx, wz)
+        trainPixels[#trainPixels + 1] = { sx = sx, sy = sy, name = name }
       end
     end
   end
@@ -317,13 +381,11 @@ local function recomputeAirshipPositions()
     if (now - a.lastSeen) > AIRSHIP_TIMEOUT then
       airships[name] = nil
     elseif a.dim == currentDim then
-      -- Dead-reckon position using last known velocity
       local dt = now - a.lastSeen
-      local ex = a.x + (a.vx or 0) * dt
-      local ez = a.z + (a.vz or 0) * dt
-      local px, py = worldToPixel(map, ex, ez)
+      local sx, sy = worldToScreen(map, a.x + (a.vx or 0) * dt,
+                                        a.z + (a.vz or 0) * dt)
       airshipPixels[#airshipPixels + 1] = {
-        dim = a.dim, px = px, py = py, name = name,
+        sx = sx, sy = sy, name = name,
         vx = a.vx or 0, vz = a.vz or 0,
       }
     end
@@ -358,7 +420,6 @@ local function handleEvent(msg)
 
   local trainName = msg.extra and msg.extra.trainName
   if not trainName and msg.event ~= "hello" then return end
-
   local now = msg.time / 1000
 
   if msg.event == "arrived" and trainName then
@@ -381,16 +442,20 @@ local function handleEvent(msg)
 end
 
 -- ---------------------------------------------------------------------------
--- Zoom from redstone: check all sides, use the highest analog signal
+-- Redstone zoom
 
 local function zoomFromRedstone()
+  local map = currentMap()
+  if not map then return end
   local s = 0
-  for _, side in ipairs({ "top", "bottom", "left", "right", "front", "back" }) do
+  for _, side in ipairs({"top","bottom","left","right","front","back"}) do
     s = math.max(s, rs.getAnalogInput(side))
   end
-  local n = math.max(1, #allMaps[currentDim])
-  -- Map 0-15 evenly onto zoom levels 1..n
-  return math.min(n, math.floor(s * n / 16) + 1)
+  -- 0 = widest (maxScale), 15 = closest (scale 1)
+  local ms  = maxScale(map)
+  local cx  = view.left + (CW / 2) * view.scale
+  local cy  = view.top  + (PH / 2) * view.scale
+  zoomAround(ms + (1 - ms) * (s / 15), cx, cy)
 end
 
 -- ---------------------------------------------------------------------------
@@ -401,19 +466,23 @@ local function inputLoop()
     local ev, a, b, c = os.pullEvent()
 
     if ev == "monitor_touch" then
-      local n = #allMaps[currentDim]
-      if n > 0 then zoomLevel = (zoomLevel % n) + 1 end
-
-    elseif ev == "redstone" then
-      zoomLevel = zoomFromRedstone()
+      centreTouchAt(b, c)
 
     elseif ev == "key" then
-      if a == keys.r then
-        loadAllMaps()
-      elseif a == keys.d then
+      if     a == keys.up    then pan(0, -PAN_STEP)
+      elseif a == keys.down  then pan(0,  PAN_STEP)
+      elseif a == keys.left  then pan(-PAN_STEP, 0)
+      elseif a == keys.right then pan( PAN_STEP, 0)
+      elseif a == keys.z     then zoomIn()
+      elseif a == keys.x     then zoomOut()
+      elseif a == keys.r     then loadAllMaps(); resetView()
+      elseif a == keys.d     then
         local other = (currentDim == "overworld") and "nether" or "overworld"
-        if #allMaps[other] > 0 then currentDim = other end
+        if maps[other] then currentDim = other; resetView() end
       end
+
+    elseif ev == "redstone" then
+      zoomFromRedstone()
 
     elseif ev == "rednet_message" then
       local _, msg, proto = a, b, c
@@ -427,7 +496,7 @@ local function renderLoop()
     recomputeTrainPositions()
     recomputeAirshipPositions()
     render()
-    renderScaleIndicator()
+    renderHUD()
     renderAirships()
     renderBases()
     sleep(REDRAW_PERIOD)

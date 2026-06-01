@@ -18,24 +18,19 @@ local BASE = "https://raw.githubusercontent.com/StefVuck/LuaTools/main/cc"
 local ROLES = {
   display = {
     { "display.lua" },
-    { "map_overworld_z1.lua" },
-    { "map_overworld_z2.lua" },
-    { "map_overworld_z3.lua" },
-    { "map_overworld_z4.lua" },
-    { "map_overworld_z5.lua" },
-    { "map_overworld_z6.lua" },
-    { "map_nether_z1.lua", optional = true },
-    { "map_nether_z2.lua", optional = true },
-    { "map_nether_z3.lua", optional = true },
-    { "map_nether_z4.lua", optional = true },
-    { "map_nether_z5.lua", optional = true },
-    { "map_nether_z6.lua", optional = true },
+    { "map_overworld.lua" },
+    { "map_nether.lua", optional = true },
   },
   station = {
     { "station.lua" },
   },
   airship = {
     { "airship.lua" },
+  },
+  autopilot = {
+    { "autopilot/autopilot.lua" },
+    { "autopilot/waypoints.lua" },
+    { "autopilot/hud.lua" },
   },
   static = {
     { "staticmap.lua" },
@@ -85,6 +80,10 @@ local function download(filename, optional)
     return false
   end
 
+  -- Ensure parent directory exists
+  local dir = filename:match("^(.+)/[^/]+$")
+  if dir and not fs.exists(dir) then fs.makeDir(dir) end
+
   local f = fs.open(filename, "w")
   f.write(body)
   f.close()
@@ -109,7 +108,7 @@ role = role:lower():gsub("%s+", "")
 
 if role == "" then
   print("Usage: install <role>")
-  print("Roles: display | station | static | update")
+  print("Roles: display | station | static | airship | autopilot | update")
   return
 end
 
@@ -133,12 +132,17 @@ elseif ROLES[role] then
   elseif role == "station" then
     print("Edit station.lua config, then run:  station")
   elseif role == "airship" then
-    print("Edit airship.lua (set NAME and DIMENSION), then run:  airship")
+    print("Edit airship.lua (set DIMENSION), then run:  airship")
+  elseif role == "autopilot" then
+    print("Navigator:  attach Redstone Link Bridge, then run:")
+    print("  autopilot/autopilot <x> <z>  OR  autopilot/autopilot <waypointName>")
+    print("HUD:        attach 1x3 horizontal monitor + modem, then run:")
+    print("  autopilot/hud")
   elseif role == "static" then
     print("Run:  staticmap")
   end
 
 else
   print("Unknown role '" .. role .. "'")
-  print("Valid roles: display, station, airship, static, update")
+  print("Valid roles: display, station, airship, autopilot, static, update")
 end
