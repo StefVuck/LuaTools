@@ -253,8 +253,8 @@ local function applySteer(error_deg, base_frac)
       setMotor("left",  slow_frac, slow_rev, false)
       setMotor("right", fast_frac, false,    false)
     end
-    local primary_frac = base_frac * (1 - frac)
-    setPrimary(primary_frac, primary_frac < 0.02)
+    local primary_frac = base_frac * (1 - frac * 0.3)
+    setPrimary(primary_frac, false)
 
   else
     setMotor("left",  base_frac, sign < 0, false)

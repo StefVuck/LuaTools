@@ -273,8 +273,8 @@ local function applySteer(error_deg, base_frac)
     end
     -- Primary scales from full (at fine boundary) to zero (at coarse boundary).
     -- This removes forward momentum that causes overshoot during medium turns.
-    local primary_frac = base_frac * (1 - frac)
-    setPrimary(primary_frac, primary_frac < 0.02)
+    local primary_frac = base_frac * (1 - frac * 0.3)
+    setPrimary(primary_frac, false)
 
   else
     -- ── COARSE: one motor fully reversed, other full forward ───────────────
