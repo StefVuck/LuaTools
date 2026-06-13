@@ -57,19 +57,22 @@ local CFG = {
   dest_z = 0,
 
   -- Distance thresholds
-  arrival_radius  = 30,   -- blocks: cut engines, we're done
-  approach_radius = 120,  -- blocks: begin slowing down
+  arrival_radius  = 30,   -- blocks: cut engines and brake
+  approach_radius = 200,  -- blocks: begin slowing down
 
   -- Speed (blocks/s) — used to scale the analog speed signal 0-15
-  max_speed       = 10,
+  max_speed       = 18,
   approach_speed  = 3,
 
+  -- Braking: reverse drive motors to kill momentum on arrival
+  brake_speed_threshold = 1.5,  -- m/s below which we stop braking and allStop
+
   -- Steering zones (absolute heading error in degrees)
-  fine_threshold   = 10,  -- below this: differential speed only
-  coarse_threshold = 45,  -- above this: one motor reversed
+  ultra_fine_threshold = 2,   -- below this: deadband, no correction (stops oscillation)
+  fine_threshold       = 10,  -- below this: differential speed only
+  coarse_threshold     = 45,  -- above this: one motor reversed, primary cut
 
   -- Proportional gain for differential speed correction (0-1)
-  -- 1.0 = at zone boundary the slow motor drops to zero
   turn_p = 0.9,
 
   -- Heading offset: compensates for ships built facing a non-North direction.
@@ -219,15 +222,23 @@ local function applySteer(error_deg, base_frac)
   local abs_err = math.abs(error_deg)
   local sign    = error_deg >= 0 and 1 or -1   -- +1 = turn right
 
-  if abs_err <= CFG.fine_threshold then
+  if abs_err <= CFG.ultra_fine_threshold then
+    -- ── ULTRA-FINE: deadband — no correction, straight ahead ───────────────
+    -- Prevents oscillation when already well-aligned.
+    setMotor("left",  base_frac, false, false)
+    setMotor("right", base_frac, false, false)
+    setPrimary(base_frac, false)
+
+  elseif abs_err <= CFG.fine_threshold then
     -- ── FINE: differential speed only, both motors forward ─────────────────
-    local frac       = abs_err / CFG.fine_threshold          -- 0→1
-    local correction = frac * CFG.turn_p * base_frac * 0.5  -- half-swing each side
+    -- Interpolate from 0 correction (at ultra_fine) to full correction (at fine)
+    local frac       = (abs_err - CFG.ultra_fine_threshold) /
+                       (CFG.fine_threshold - CFG.ultra_fine_threshold)
+    local correction = frac * CFG.turn_p * base_frac * 0.5
 
     local fast = math.min(1, base_frac + correction)
     local slow = math.max(0, base_frac - correction)
 
-    -- sign > 0 = turn right = left is the fast side
     setMotor("left",  sign > 0 and fast or slow, false, false)
     setMotor("right", sign > 0 and slow or fast, false, false)
     setPrimary(base_frac, false)
@@ -301,8 +312,21 @@ local function navTick()
   local dz   = CFG.dest_z - pos_z
   local dist = math.sqrt(dx*dx + dz*dz)
 
-  -- ── Arrival ──────────────────────────────────────────────────────────────
+  -- ── Arrival / Braking ────────────────────────────────────────────────────
   if dist < CFG.arrival_radius then
+    local speed = math.sqrt(vel.x^2 + vel.z^2)
+
+    if speed > CFG.brake_speed_threshold then
+      -- Still moving — reverse drive motors to kill momentum.
+      -- No primary gearshift available so we cut primary and use drives.
+      state.phase = "braking"
+      local brake_frac = math.min(1, speed / CFG.max_speed)
+      setMotor("left",  brake_frac, true, false)
+      setMotor("right", brake_frac, true, false)
+      setPrimary(0, true)
+      return true
+    end
+
     if state.phase ~= "arrived" then
       print(("[autopilot] Arrived at %.0f, %.0f"):format(CFG.dest_x, CFG.dest_z))
       state.phase = "arrived"
@@ -345,8 +369,9 @@ local function navTick()
   if math.floor(os.epoch("utc") / 5000) ~=
      math.floor((os.epoch("utc") - CFG.tick * 1000) / 5000) then
     local spd = math.sqrt(vel.x^2 + vel.z^2)
-    local zone = math.abs(err_deg) <= CFG.fine_threshold   and "fine"
-              or math.abs(err_deg) <= CFG.coarse_threshold and "medium"
+    local zone = math.abs(err_deg) <= CFG.ultra_fine_threshold and "ultrafine"
+              or math.abs(err_deg) <= CFG.fine_threshold        and "fine"
+              or math.abs(err_deg) <= CFG.coarse_threshold      and "medium"
               or "coarse"
     print(("[autopilot] %.0fblk  err=%+.1f°  spd=%.1f  zone=%s"):format(
       dist, err_deg, spd, zone))

@@ -391,7 +391,10 @@ local function updateFromPacket(msg)
   data.ap_updated = now
 
   local ae = math.abs(data.err_deg)
-  data.zone = ae <= 10 and "fine" or ae <= 45 and "medium" or "coarse"
+  data.zone = ae <= 2  and "ultrafine"
+           or ae <= 10 and "fine"
+           or ae <= 45 and "medium"
+           or "coarse"
 
   -- Prefer sublevel for pos/vel; only use packet values as fallback
   if not data.sublevel_ok then
@@ -553,9 +556,11 @@ local function redraw()
       ap and (data.err_deg >= 0 and "+" or "") .. ("%.1f deg"):format(data.err_deg) or "---",
       ap and aeCol or C.border)
 
-  local zoneCol = data.zone == "fine"   and C.good
-               or data.zone == "medium" and C.warn
-               or data.zone == "off"    and C.border
+  local zoneCol = data.zone == "ultrafine" and colors.cyan
+               or data.zone == "fine"      and C.good
+               or data.zone == "medium"    and C.warn
+               or data.zone == "off"       and C.border
+               or data.zone == "braking"   and colors.orange
                or C.bad
   row(1, 17, "Steer    ", data.zone:upper(), zoneCol)
 
