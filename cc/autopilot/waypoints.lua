@@ -1,20 +1,47 @@
 -- waypoints.lua
--- Named destination registry.  Used by autopilot.lua when launched as:
---   autopilot <name>
--- or imported by other scripts: local wp = require("waypoints")
+-- Persistent named destination registry stored in autopilot/waypoints.json.
+--
+-- As a module (required by autopilot.lua):
+--   local wp = require("autopilot/waypoints")
+--   wp.get("home")   -> { x=..., z=... } or nil
+--   wp.list()        -> sorted array of { name, x, z }
+--
+-- As a CLI (run directly in the CC shell):
+--   autopilot/waypoints list
+--   autopilot/waypoints set <name> <x> <z>
+--   autopilot/waypoints del <name>
 
-local waypoints = {
-  -- ["home"]   = { x =    0, z =    0 },
-  -- ["port"]   = { x =  512, z = -256 },
-}
+local DB_PATH = "autopilot/waypoints.json"
+
+-- ---------------------------------------------------------------------------
+-- Persistence
+
+local function load()
+  if not fs.exists(DB_PATH) then return {} end
+  local f = fs.open(DB_PATH, "r")
+  local raw = f.readAll()
+  f.close()
+  return textutils.unserialiseJSON(raw) or {}
+end
+
+local function save(db)
+  local f = fs.open(DB_PATH, "w")
+  f.write(textutils.serialiseJSON(db))
+  f.close()
+end
+
+-- ---------------------------------------------------------------------------
+-- API
 
 local function get(name)
-  return waypoints[name]
+  local db = load()
+  return db[name]   -- { x=..., z=... } or nil
 end
 
 local function list()
+  local db = load()
   local out = {}
-  for k, v in pairs(waypoints) do
+  for k, v in pairs(db) do
     out[#out + 1] = { name = k, x = v.x, z = v.z }
   end
   table.sort(out, function(a, b) return a.name < b.name end)
@@ -22,28 +49,52 @@ local function list()
 end
 
 local function set(name, x, z)
-  waypoints[name] = { x = x, z = z }
+  local db = load()
+  db[name] = { x = x, z = z }
+  save(db)
 end
 
 local function remove(name)
-  waypoints[name] = nil
+  local db = load()
+  db[name] = nil
+  save(db)
 end
 
--- CLI usage: lua waypoints.lua list | set <name> <x> <z> | del <name>
-if arg and arg[0] then
-  local cmd = arg[1]
+-- ---------------------------------------------------------------------------
+-- CC shell CLI  (args via {...}, not the unavailable 'arg' global)
+
+local cliArgs = { ... }
+if #cliArgs > 0 then
+  local cmd = cliArgs[1]
   if cmd == "list" then
-    for _, w in ipairs(list()) do
-      print(("  %-20s  x=%.0f  z=%.0f"):format(w.name, w.x, w.z))
+    local entries = list()
+    if #entries == 0 then
+      print("No waypoints saved.")
+    else
+      for _, w in ipairs(entries) do
+        print(("  %-20s  x=%.0f  z=%.0f"):format(w.name, w.x, w.z))
+      end
     end
-  elseif cmd == "set" and arg[2] and arg[3] and arg[4] then
-    set(arg[2], tonumber(arg[3]), tonumber(arg[4]))
-    print("Set " .. arg[2])
-  elseif cmd == "del" and arg[2] then
-    remove(arg[2])
-    print("Removed " .. arg[2])
+
+  elseif cmd == "set" and cliArgs[2] and cliArgs[3] and cliArgs[4] then
+    local x = tonumber(cliArgs[3])
+    local z = tonumber(cliArgs[4])
+    if not (x and z) then
+      print("x and z must be numbers")
+    else
+      set(cliArgs[2], x, z)
+      print(("Saved '%s'  x=%.0f  z=%.0f"):format(cliArgs[2], x, z))
+    end
+
+  elseif cmd == "del" and cliArgs[2] then
+    remove(cliArgs[2])
+    print("Removed '" .. cliArgs[2] .. "'")
+
   else
-    print("Usage: waypoints list | set <name> <x> <z> | del <name>")
+    print("Usage:")
+    print("  autopilot/waypoints list")
+    print("  autopilot/waypoints set <name> <x> <z>")
+    print("  autopilot/waypoints del <name>")
   end
 end
 
