@@ -31,6 +31,7 @@ local ROLES = {
     { "autopilot/autopilot.lua" },
     { "autopilot/waypoints.lua" },
     { "autopilot/hud.lua" },
+    { "autopilot/sweep.lua" },
   },
   static = {
     { "staticmap.lua" },
@@ -136,6 +137,8 @@ elseif ROLES[role] then
   elseif role == "autopilot" then
     print("Navigator:  attach Redstone Link Bridge, then run:")
     print("  autopilot/autopilot <x> <z>  OR  autopilot/autopilot <waypointName>")
+    print("Sweep:      lawnmower area scan, then run:")
+    print("  autopilot/sweep <x1> <z1> <x2> <z2>")
     print("HUD:        attach 5x3 horizontal monitor bank + modem, then run:")
     print("  autopilot/hud")
   elseif role == "static" then

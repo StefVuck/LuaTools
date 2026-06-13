@@ -57,12 +57,14 @@ local CFG = {
   dest_z = 0,
 
   -- Distance thresholds
-  arrival_radius  = 30,   -- blocks: cut engines and brake
-  approach_radius = 200,  -- blocks: begin slowing down
+  arrival_radius        = 30,   -- blocks: cut engines and brake
+  inner_approach_radius = 250,  -- blocks: slow to approach_speed ramp
+  outer_approach_radius = 500,  -- blocks: start gentle deceleration
 
   -- Speed (blocks/s) — used to scale the analog speed signal 0-15
-  max_speed       = 18,
-  approach_speed  = 3,
+  max_speed      = 18,
+  mid_speed      = 10,  -- cruise speed between outer and inner approach
+  approach_speed = 3,   -- crawl speed inside inner approach
 
   -- Braking: reverse drive motors to kill momentum on arrival
   brake_speed_threshold = 1.5,  -- m/s below which we stop braking and allStop
@@ -269,7 +271,10 @@ local function applySteer(error_deg, base_frac)
       setMotor("left",  slow_frac, slow_rev, false)
       setMotor("right", fast_frac, false,    false)
     end
-    setPrimary(base_frac, false)
+    -- Primary scales from full (at fine boundary) to zero (at coarse boundary).
+    -- This removes forward momentum that causes overshoot during medium turns.
+    local primary_frac = base_frac * (1 - frac)
+    setPrimary(primary_frac, primary_frac < 0.02)
 
   else
     -- ── COARSE: one motor fully reversed, other full forward ───────────────
@@ -337,11 +342,19 @@ local function navTick()
 
   state.phase = "navigating"
 
-  -- ── Target speed ─────────────────────────────────────────────────────────
-  local target_bps = CFG.max_speed
-  if dist < CFG.approach_radius then
-    local t = dist / CFG.approach_radius
-    target_bps = CFG.approach_speed + (CFG.max_speed - CFG.approach_speed) * t
+  -- ── Target speed (two-stage decel) ───────────────────────────────────────
+  local target_bps
+  if dist >= CFG.outer_approach_radius then
+    target_bps = CFG.max_speed
+  elseif dist >= CFG.inner_approach_radius then
+    local t = (dist - CFG.inner_approach_radius) /
+              (CFG.outer_approach_radius - CFG.inner_approach_radius)
+    target_bps = CFG.mid_speed + (CFG.max_speed - CFG.mid_speed) * t
+  else
+    local t = (dist - CFG.arrival_radius) /
+              (CFG.inner_approach_radius - CFG.arrival_radius)
+    t = math.max(0, t)
+    target_bps = CFG.approach_speed + (CFG.mid_speed - CFG.approach_speed) * t
   end
   local base_sig = speedFrac(target_bps)
 
