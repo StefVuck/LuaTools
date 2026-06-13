@@ -321,22 +321,34 @@ local function navTick()
   if dist < CFG.arrival_radius then
     local speed = math.sqrt(vel.x^2 + vel.z^2)
 
+    local phase
     if speed > CFG.brake_speed_threshold then
-      -- Still moving — reverse drive motors to kill momentum.
-      -- No primary gearshift available so we cut primary and use drives.
       state.phase = "braking"
       local brake_frac = math.min(1, speed / CFG.max_speed)
       setMotor("left",  brake_frac, true, false)
       setMotor("right", brake_frac, true, false)
       setPrimary(0, true)
-      return true
+      phase = "braking"
+    else
+      if state.phase ~= "arrived" then
+        print(("[autopilot] Arrived at %.0f, %.0f"):format(CFG.dest_x, CFG.dest_z))
+        state.phase = "arrived"
+      end
+      allStop()
+      phase = "arrived"
     end
-
-    if state.phase ~= "arrived" then
-      print(("[autopilot] Arrived at %.0f, %.0f"):format(CFG.dest_x, CFG.dest_z))
-      state.phase = "arrived"
+    if CFG.broadcast_status and modem then
+      rednet.broadcast({
+        type     = "autopilot",
+        name     = shipName,
+        phase    = phase,
+        pos      = { x = pos_x, z = pos_z },
+        dest     = { x = CFG.dest_x, z = CFG.dest_z },
+        dist     = dist,
+        err_deg  = 0,
+        velocity = { x = vel.x, z = vel.z },
+      }, CFG.status_channel)
     end
-    allStop()
     return true
   end
 

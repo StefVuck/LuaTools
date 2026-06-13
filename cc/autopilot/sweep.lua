@@ -295,16 +295,30 @@ local function navTick(dest_x, dest_z)
   -- Arrival / braking
   if dist < CFG.arrival_radius then
     local speed = math.sqrt(vel.x^2 + vel.z^2)
+    local phase
     if speed > CFG.brake_speed_threshold then
-      sweepState.phase = "braking"
+      phase = "braking"
       local brake_frac = math.min(1, speed / CFG.max_speed)
       setMotor("left",  brake_frac, true, false)
       setMotor("right", brake_frac, true, false)
       setPrimary(0, true)
-      return true, "braking"
+    else
+      phase = "arrived"
+      allStop()
     end
-    allStop()
-    return true, "arrived"
+    if CFG.broadcast_status and modem then
+      rednet.broadcast({
+        type     = "autopilot",
+        name     = shipName,
+        phase    = "sweep-" .. wpIndex .. "/" .. totalWPs .. "-" .. phase,
+        pos      = { x = pos_x, z = pos_z },
+        dest     = { x = dest_x, z = dest_z },
+        dist     = dist,
+        err_deg  = 0,
+        velocity = { x = vel.x, z = vel.z },
+      }, CFG.status_channel)
+    end
+    return true, phase == "arrived" and "arrived" or "braking"
   end
 
   sweepState.phase = "navigating"
@@ -356,15 +370,14 @@ while wpIndex <= totalWPs do
 
   local legDone = false
   while not legDone do
-    local ok, result = pcall(navTick, wp.x, wp.z)
+    local ok, _, status = pcall(navTick, wp.x, wp.z)
     if not ok then
-      print("[sweep] Error: " .. tostring(result))
+      print("[sweep] Error: " .. tostring(status))
       allStop()
       sleep(1)
-    elseif result == "lost" then
-      -- Sub-level lost — abort entire sweep
+    elseif status == "lost" then
       return
-    elseif result == "arrived" then
+    elseif status == "arrived" then
       legDone = true
     end
     sleep(CFG.tick)
